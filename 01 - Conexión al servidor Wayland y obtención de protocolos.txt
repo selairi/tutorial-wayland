@@ -1,0 +1,1550 @@
+Conectándose a un protocolo en Wayland
+======================================
+
+Estos son unos apuntes básicos que estoy creando para mi sobre el uso de los protocolos en Wayland desde un cliente.
+
+Para empezar lo primero que se necesita es conectarse al servidor. Esto se puede realizar con la funciones:
+ - wl_display_connect(): Para realizar la conexión.
+ - wl_display_disconnect: Para desconectarse.
+
+Ejemplo "tut1.c":
+
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <wayland-client.h>
+    
+    int main(int argc, char **argv) {
+    
+        struct wl_display *display = wl_display_connect(NULL);
+        if (display == NULL) {
+            fprintf(stderr, "Can't connect to display\n");
+            exit(1);
+        }
+        printf("connected to display\n");
+    
+        wl_display_disconnect(display);
+        printf("disconnected from display\n");
+        
+        exit(0);
+    }
+
+Se compila con:
+    $ gcc -o tut1 tut1.c -lwayland-client
+
+Una vez conectados al servidor, el servidor enviará al cliente los recursos de los que dispone. El cliente no puede solicitar consultar los recursos cuando a él le interese, el servidor le enviará los recursos a través de eventos y es el cliente el que tiene que recordar y adquirir los recursos que le interesen.
+
+Como ya se ha deducido del párrafo anterior Wayland se basa en un modelo de paso de mensajes.
+IMPORTANTE: Cuando el servidor pasa un mensaje al cliente, se denomina EVENTO (event). Cuando es el cliente el que pasa un mensaje al servidor, se denomina PETICIÓN (request).
+
+
+Escuchando eventos
+------------------
+
+¿Cómo simular en C este sistema de paso de mensajes? Cuando se deseé escuchar los eventos desde el cliente, se tendrán una serie de estructuras con punteros a funciones.
+
+Por ejemplo, el tipo "struct wl_register" es la que nos permite escuchar del servidor los eventos relacionados con los recursos de los que dispone el servidor. Asociada a esta estructura, se tiene la estructura "struct wl_registry_listener" que tiene el siguiente aspecto (esto es un copia-pega desde la cabecera "wayland-client.h", no asustarse que en el ejemplo se va a ver bastante sencillo):
+
+    struct wl_registry_listener {
+        /**
+         * announce global object
+         *
+         * Notify the client of global objects.
+         *
+         * The event notifies the client that a global object with the
+         * given name is now available, and it implements the given version
+         * of the given interface.
+         * @param name numeric name of the global object
+         * @param interface interface implemented by the object
+         * @param version interface version
+         */
+        void (*global)(void *data,
+                   struct wl_registry *wl_registry,
+                   uint32_t name,
+                   const char *interface,
+                   uint32_t version);
+        /**
+         * announce removal of global object
+         *
+         * Notify the client of removed global objects.
+         *
+         * This event notifies the client that the global identified by
+         * name is no longer available. If the client bound to the global
+         * using the bind request, the client should now destroy that
+         * object.
+         *
+         * The object remains valid and requests to the object will be
+         * ignored until the client destroys it, to avoid races between the
+         * global going away and a client sending a request to it.
+         * @param name numeric name of the global object
+         */
+        void (*global_remove)(void *data,
+                      struct wl_registry *wl_registry,
+                      uint32_t name);
+    };
+
+Como se puede ver la "struct wl_registry_listener" tiene dos campos "global" que es un puntero a función que se ejecutará cada vez que el servidor envíe un mensaje indicando que el cliente tiene disponible un recurso y "global_remove" que indica que el recurso ha sido eliminado.
+
+De momento, se usarán las siguientes funciones para enlazar (las explico más adelante):
+
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        printf("Got a registry event for %s id %d\n", interface, id);
+    
+    }
+    
+    static void
+    registry_listener_remover(void *data, struct wl_registry *registry, uint32_t id)
+    {
+        printf("Got a registry losing event for %d\n", id);
+    }
+
+Vamos a escribir y ejecutar un ejemplo, para después ver su salida y explicarlo. El ejemplo sería:
+
+    // gcc -o tut1 tut1.c -lwayland-client
+    
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <wayland-client.h>
+    
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        printf("Got a registry event for %s id %d\n", interface, id);
+    
+    }
+    
+    static void
+    registry_listener_remove(void *data, struct wl_registry *registry, uint32_t id)
+    {
+        printf("Got a registry losing event for %d\n", id);
+    }
+    
+    int main(int argc, char **argv)
+    {
+    
+        struct wl_display *display = wl_display_connect(NULL);
+        if (display == NULL) {
+            fprintf(stderr, "Can't connect to display\n");
+            exit(1);
+        }
+        printf("connected to display\n");
+    
+        // Se crea el escuchador de wl_registry
+        struct wl_registry_listener registry_listener;
+        registry_listener.global = registry_listener_global;
+        registry_listener.global_remove = registry_listener_remove;
+    
+        // Se obtiene el objeto wl_registry 
+        struct wl_registry *registry = wl_display_get_registry(display);
+        // Se le añade el escuchador recién creado
+        wl_registry_add_listener(registry, &registry_listener, NULL);
+    
+        // Se solicita que se envíen las peticiones desde el cliente al servidor
+        wl_display_dispatch(display);
+        // Se bloquea hasta que se procesen los eventos
+        wl_display_roundtrip(display);
+    
+        wl_display_disconnect(display);
+        printf("disconnected from display\n");
+        
+        exit(0);
+    }
+
+La salida de este ejemplo es, en mi caso, según el servidor y su versión la salida cambiará:
+
+    connected to display
+    Got a registry event for wl_shm id 1
+    Got a registry event for wl_drm id 2
+    Got a registry event for zwp_linux_dmabuf_v1 id 3
+    Got a registry event for wl_compositor id 4
+    Got a registry event for wl_subcompositor id 5
+    Got a registry event for wl_data_device_manager id 6
+    Got a registry event for zwlr_gamma_control_manager_v1 id 7
+    Got a registry event for gtk_primary_selection_device_manager id 8
+    Got a registry event for zxdg_output_manager_v1 id 9
+    Got a registry event for org_kde_kwin_idle id 10
+    Got a registry event for zwp_idle_inhibit_manager_v1 id 11
+    Got a registry event for zwlr_layer_shell_v1 id 12
+    Got a registry event for xdg_wm_base id 13
+    Got a registry event for zwp_tablet_manager_v2 id 14
+    Got a registry event for org_kde_kwin_server_decoration_manager id 15
+    Got a registry event for zxdg_decoration_manager_v1 id 16
+    Got a registry event for zwp_relative_pointer_manager_v1 id 17
+    Got a registry event for zwp_pointer_constraints_v1 id 18
+    Got a registry event for wp_presentation id 19
+    Got a registry event for zwlr_output_manager_v1 id 20
+    Got a registry event for zwlr_output_power_manager_v1 id 21
+    Got a registry event for zwp_input_method_manager_v2 id 22
+    Got a registry event for zwp_text_input_manager_v3 id 23
+    Got a registry event for zwlr_foreign_toplevel_manager_v1 id 24
+    Got a registry event for zwlr_export_dmabuf_manager_v1 id 25
+    Got a registry event for zwlr_screencopy_manager_v1 id 26
+    Got a registry event for zwlr_data_control_manager_v1 id 27
+    Got a registry event for zwp_primary_selection_device_manager_v1 id 28
+    Got a registry event for wp_viewporter id 29
+    Got a registry event for zwp_virtual_keyboard_manager_v1 id 30
+    Got a registry event for zwlr_virtual_pointer_manager_v1 id 31
+    Got a registry event for zwlr_input_inhibit_manager_v1 id 32
+    Got a registry event for zwp_keyboard_shortcuts_inhibit_manager_v1 id 33
+    Got a registry event for wl_seat id 34
+    Got a registry event for zwp_pointer_gestures_v1 id 35
+    Got a registry event for wl_output id 36
+    disconnected from display
+
+Este es el listado de todos los protocolos, realmente son los recursos, que el servidor Wayland pondría a disposición del cliente en mi caso. Por ejemplo, xdg_wm_base sirve para crear ventanas que se pueden maximizar, minimizar,... zwlr_layer_shell sirve para crear paneles y las típicas barras de tareas.  zwlr_screencopy_manager para hacer capturas de pantalla,...
+
+Hay protocolos que son estándar y que van a estar en todos los servidores de Wayland. Hay otros que son muy aceptados y los vamos a encontrar en la mayoría. Finalmente, hay protocolos que sólo se van a encontrar en determinados servidores. Wayland fue pensado en la seguridad, de forma que sea el servidor el que realice muchas acciones que puedan comprometer la seguridad del usuario. Por ejemplo, la captura de pantalla puede suponer un problema de seguridad si la realiza una aplicación mal intencionada. Las capturas de pantalla deberían ser realizadas por el servidor Wayland y no por los clientes. Es por ello que este protocolo puede ser que no esté disponible para los clientes en muchos servidores.
+
+Vamos a analizar el código fuente del ejemplo anterior. Dentro de la función main se tienen:
+
+    // Se crea el eschador de wl_registry
+    struct wl_registry_listener registry_listener;
+    registry_listener.global = registry_listener_global;
+    registry_listener.global_remove = registry_listener_remove;
+
+Se está creando el escuchador de wl_registry y se le asignan los métodos registry_listener_global y registry_listener_remove para que sean los métodos que van a procesar los eventos.
+
+Este escuchador se debe registrar como tal, para ello:
+
+    // Se obtiene el objeto wl_registry 
+    struct wl_registry *registry = wl_display_get_registry(display);
+    // Se le añade el escuchador recién creado
+    wl_registry_add_listener(registry, &registry_listener, NULL);
+
+Con wl_registry_add_listener añade el escuchador para gestionar los eventos. Su declaración es (consultar "wayland-client.h"):
+
+    static inline int
+    wl_registry_add_listener(struct wl_registry *wl_registry,
+                 const struct wl_registry_listener *listener,
+                 void *data)
+
+El último campo "data" se usará para que pasemos datos a nuestras funciones registry_listener_global y registry_listener_remove. Si nos fijamos ambas tienen un campo data:
+
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    static void
+    registry_listener_remove(void *data, struct wl_registry *registry, uint32_t id)
+
+En este campo data se puede pasar un puntero a una estructura con los datos que se consideren útiles. Por ejemplo, se ha dicho que el servidor pasa al cliente los recursos disponibles (protocolos) usando eventos y debe ser el cliente el que los almacene para posteriormente pueda usarlos. O se usan variables globales para tal fin, cuyo uso no es recomendable o se usa una estructura de este tipo.
+
+En el ejemplo, por ahora, no se va a almacenar nada, por lo que se pasa un NULL.
+
+La función wl_registry_add_listener es una petición que hace el cliente al servidor (request). Si sólo se pone la función y no se hace nada más se verá que no sucede nada. Cada vez que se haga una o varias peticiones (request), se debe ejecutar wl_display_dispatch. Con esta función se le está diciendo al servidor que ejecute las peticiones del cliente y escuche los eventos pendientes. Todas las peticiones realizadas se guardarán en una cola que el servidor atenderá.
+Con wl_display_roundtrip se bloquea la ejecución del cliente hasta que se procese la cola de peticiones.
+
+La única petición que se ha hecho hasta ahora es que se registre el escuchador struct wl_registry_listener. Una vez registrado el servidor genera varios eventos global (uno por cada protocolo en el servidor), que son procesados por la función registry_listener_global. Nuestra implementación de registry_listener_global sólo muestra los protocolos del servidor:
+
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        printf("Got a registry event for %s id %d\n", interface, id);
+    
+    }
+ 
+La función registry_listener_global tiene los campos:
+ - data: Puntero a datos que posteriormente se usarán para guardar los recursos (protocolos).
+ - registry: Es un puntero al objeto wl_registry que generó la petición. Se usará para solicitar los recursos.
+ - interface: Es el nombre del protocolo.
+ - version: Es la versión del protocolo.
+
+La versión del protocolo se gestiona de forma curiosa. Los protocolos se organizan formando un árbol de forma que unos pueden contener a otros. Si un protocolo hijo actualiza su versión, el protocolo padre actualiza también su versión de forma que la versión del padre es siempre mayor o igual que la de los hijos que contiene.
+
+
+Solicitando protocolos
+----------------------
+
+En el apartado anterior se ha visto un ejemplo de cómo se capturan los eventos y se realizan las peticiones.
+
+Como ejemplo se va solicitar el protocolo wl_seat. ¿Qué es un wl_seat? Supongamos que se tiene un ordenador. A este ordenador se le conectan dos pantallas, dos teclados y dos ratones. Si el servidor Wayland lo permite, se puede hacer una configuración de forma que se asocie un ratón y un teclado a una de las pantallas y el otro ratón y el otro teclado a la otra pantalla de forma que dos usuarios se sienten a trabajar en cada uno de los monitores de forma independiente. Es decir, de un solo ordenador se pueden sacar dos puestos de trabajo. Esto se denomina multipuesto. Wayland define cada wl_seat como un conjunto dispositivos de entrada (ratón, teclado, pantalla táctil,...).
+
+Veamos cómo se modifica el ejemplo anterior:
+
+    // gcc -o tut1 tut1.c -lwayland-client
+    
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <wayland-client.h>
+    
+    
+    ////////////////////////////////////////////////////////////
+    // Estructura de datos para almacenar recursos
+    
+    struct Datos {
+        struct wl_seat *seat;
+    };
+    
+    
+    ////////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de registry_listener
+    
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        // Se obtiene la struct Datos
+        struct Datos *datos = (struct Datos*) data;
+    
+        printf("Got a registry event for %s id %d\n", interface, id);
+        
+        // Se busca el recurso
+        if(!strcmp(interface, "wl_seat")) {
+            // Se solicita el objeto wl_seat
+            datos->seat = wl_registry_bind(registry, id, &wl_seat_interface, version);
+        }
+    
+    }
+    
+    static void
+    registry_listener_remove(void *data, struct wl_registry *registry, uint32_t id)
+    {
+        printf("Got a registry losing event for %d\n", id);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    
+    int main(int argc, char **argv)
+    {
+    
+        struct wl_display *display = wl_display_connect(NULL);
+        if (display == NULL) {
+            fprintf(stderr, "Can't connect to display\n");
+            exit(1);
+        }
+        printf("connected to display\n");
+    
+        // Se crea la estructura para almacenar los protocolos
+        struct Datos datos;
+        datos.seat = NULL;
+    
+        // Se crea el eschador de wl_registry
+        struct wl_registry_listener registry_listener;
+        registry_listener.global = registry_listener_global;
+        registry_listener.global_remove = registry_listener_remove;
+    
+        // Se obtiene el objeto wl_registry 
+        struct wl_registry *registry = wl_display_get_registry(display);
+        // Se le añade el escuchador recién creado
+        wl_registry_add_listener(registry, &registry_listener, &datos);
+    
+        // Se solicita que se envíen las peticiones desde el cliente al servidor
+        wl_display_dispatch(display);
+        // Se bloquea hasta que se procesen los eventos
+        wl_display_roundtrip(display);
+    
+        if(datos.seat != NULL) {
+            printf("wl_seat localizado\n");
+        } else {
+            printf("wl_seat no localizado\n");
+        }
+    
+        wl_display_disconnect(display);
+        printf("disconnected from display\n");
+        
+        exit(0);
+    }
+
+Como se puede ver en el ejemplo se crea una struct Datos en la que se van a almacenar los datos que se necesiten:
+
+    ////////////////////////////////////////////////////////////
+    // Estructura de datos para almacenar recursos
+    
+    struct Datos {
+        struct wl_seat *seat;
+    };
+
+Como sólo se va a almacenar el objeto wl_seat, pues sólo contiene este elemento.
+Nota: En la línea anterior se está diciendo que wl_seat es un objeto. C no es un lenguaje orientado a objetos, pero sí permite hacer orientación de objetos. De hecho, GTK es una biblioteca orientada a objetos. Lógicamente no se tiene la facilidad y la sencillez de los lenguajes orientados a objetos.
+
+En el método main se debe crear la struct Datos y pasarla en las peticiones (request) que se creen a partir de ahora:
+
+    // Se crea la estructura para almacenar los protocolos
+    struct Datos datos;
+    datos.seat = NULL;
+
+Ahora la struct Datos se debe pasar en cada petición:
+
+    // Se le añade el escuchador recién creado
+    wl_registry_add_listener(registry, &registry_listener, &datos);
+
+Dentro de la función registry_listener_global, se debe hacer un cast para recuperar la estructura datos:
+
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        // Se obtiene la struct Datos
+        struct Datos *datos = (struct Datos*) data;
+
+
+Vamos a ver cómo solicitar el protocolo wl_seat. registry_listener_global va capturando el nombre (interface), identificador (id) y versión (version) de cada protocolo que envía el servidor. Con un simple "if" se busca el nombre del protocolo que se desea capturar y se usa wl_registry_bind para capturarlo:
+
+    // Se busca el recurso
+    if(!strcmp(interface, "wl_seat")) {
+        // Se solicita el objeto wl_seat
+        datos->seat = wl_registry_bind(registry, id, &wl_seat_interface, version);
+    }
+
+En wl_registry_bind se deben pasar como argumentos:
+ - registry: El objeto wl_registry
+ - id: El id del protocolo
+ - interface: La interfaz del protocolo. Suele ser "protolo" + "_interface". Por ejemplo, para wl_seat es wl_seat_interface.
+ - version: La versión del protocolo.
+
+Como se puede ver todos estos argumentos son fáciles de obtener desde registry_listener_global.
+
+Al igual que wl_seat se pueden obtener otros protocolos que pueden ser útiles. Por ejemplo, wl_output que representa un área del compositor, normalmente una pantalla. Supongamos que tenemos una sola pantalla conectada a nuestro ordenador. wl_output representará lo que se ve por esa pantalla. También permite obtener diversos parámetros de la pantalla como las diferentes resoluciones con las que puede trabajar. Este protocolo sólo permite recibir los eventos con la información, no puede cambiar la resolución de los monitores.
+
+Para capturarlo se debe modificar el método registry_listener_global y añadir el correspondiente método wl_registry_bind:
+
+    else if(!strcmp(interface, "wl_output")) {
+        datos->output = wl_registry_bind(registry, id, &wl_output_interface, version);
+
+        // Se registra el escuchador de los eventos del servidor para wl_output
+        ...    
+    }
+
+El objeto wl_output tiene un método para añadir el escuchador correspondiente:
+
+    wl_output_add_listener(output, output_listener, datos);
+
+El escuchador (output_listener) viene definido por la siguiente estructura (copiada de wayland-client-protocol.h):
+
+    struct wl_output_listener {
+        /**
+         * properties of the output
+         *
+         * The geometry event describes geometric properties of the
+         * output. The event is sent when binding to the output object and
+         * whenever any of the properties change.
+         *
+         * The physical size can be set to zero if it doesn't make sense
+         * for this output (e.g. for projectors or virtual outputs).
+         *
+         * Note: wl_output only advertises partial information about the
+         * output position and identification. Some compositors, for
+         * instance those not implementing a desktop-style output layout or
+         * those exposing virtual outputs, might fake this information.
+         * Instead of using x and y, clients should use
+         * xdg_output.logical_position. Instead of using make and model,
+         * clients should use xdg_output.name and xdg_output.description.
+         * @param x x position within the global compositor space
+         * @param y y position within the global compositor space
+         * @param physical_width width in millimeters of the output
+         * @param physical_height height in millimeters of the output
+         * @param subpixel subpixel orientation of the output
+         * @param make textual description of the manufacturer
+         * @param model textual description of the model
+         * @param transform transform that maps framebuffer to output
+         */
+        void (*geometry)(void *data,
+                 struct wl_output *wl_output,
+                 int32_t x,
+                 int32_t y,
+                 int32_t physical_width,
+                 int32_t physical_height,
+                 int32_t subpixel,
+                 const char *make,
+                 const char *model,
+                 int32_t transform);
+        /**
+         * advertise available modes for the output
+         *
+         * The mode event describes an available mode for the output.
+         *
+         * The event is sent when binding to the output object and there
+         * will always be one mode, the current mode. The event is sent
+         * again if an output changes mode, for the mode that is now
+         * current. In other words, the current mode is always the last
+         * mode that was received with the current flag set.
+         *
+         * Non-current modes are deprecated. A compositor can decide to
+         * only advertise the current mode and never send other modes.
+         * Clients should not rely on non-current modes.
+         *
+         * The size of a mode is given in physical hardware units of the
+         * output device. This is not necessarily the same as the output
+         * size in the global compositor space. For instance, the output
+         * may be scaled, as described in wl_output.scale, or transformed,
+         * as described in wl_output.transform. Clients willing to retrieve
+         * the output size in the global compositor space should use
+         * xdg_output.logical_size instead.
+         *
+         * The vertical refresh rate can be set to zero if it doesn't make
+         * sense for this output (e.g. for virtual outputs).
+         *
+         * Clients should not use the refresh rate to schedule frames.
+         * Instead, they should use the wl_surface.frame event or the
+         * presentation-time protocol.
+         *
+         * Note: this information is not always meaningful for all outputs.
+         * Some compositors, such as those exposing virtual outputs, might
+         * fake the refresh rate or the size.
+         * @param flags bitfield of mode flags
+         * @param width width of the mode in hardware units
+         * @param height height of the mode in hardware units
+         * @param refresh vertical refresh rate in mHz
+         */
+        void (*mode)(void *data,
+                 struct wl_output *wl_output,
+                 uint32_t flags,
+                 int32_t width,
+                 int32_t height,
+                 int32_t refresh);
+        /**
+         * sent all information about output
+         *
+         * This event is sent after all other properties have been sent
+         * after binding to the output object and after any other property
+         * changes done after that. This allows changes to the output
+         * properties to be seen as atomic, even if they happen via
+         * multiple events.
+         * @since 2
+         */
+        void (*done)(void *data,
+                 struct wl_output *wl_output);
+        /**
+         * output scaling properties
+         *
+         * This event contains scaling geometry information that is not
+         * in the geometry event. It may be sent after binding the output
+         * object or if the output scale changes later. If it is not sent,
+         * the client should assume a scale of 1.
+         *
+         * A scale larger than 1 means that the compositor will
+         * automatically scale surface buffers by this amount when
+         * rendering. This is used for very high resolution displays where
+         * applications rendering at the native resolution would be too
+         * small to be legible.
+         *
+         * It is intended that scaling aware clients track the current
+         * output of a surface, and if it is on a scaled output it should
+         * use wl_surface.set_buffer_scale with the scale of the output.
+         * That way the compositor can avoid scaling the surface, and the
+         * client can supply a higher detail image.
+         * @param factor scaling factor of output
+         * @since 2
+         */
+        void (*scale)(void *data,
+                  struct wl_output *wl_output,
+                  int32_t factor);
+    };
+
+Para más información sobre wl_output se recomienda leer el siguiente enlace:
+https://wayland.freedesktop.org/docs/html/apa.html#protocol-spec-wl_output
+
+Como se puede apreciar la struct wl_output_listener sólo tiene 4 campos (geometry, mode, done y scale). Para implementar estos 4 campos de struct wl_output_listener, se usarán los siguientes métodos:
+
+    void output_listener_geometry(void *data,
+            struct wl_output *wl_output,
+            int32_t x,
+            int32_t y,
+            int32_t physical_width,
+            int32_t physical_height,
+            int32_t subpixel,
+            const char *make,
+            const char *model,
+            int32_t transform)
+    {
+        printf("Manofacturer: %s\tmodel: %s\ttransform: %d\n",
+                make, model, transform);
+        printf("\tx: %d\ty: %d\twidth(mm): %d\theight(mm): %d\tsubpixel: %d\n",
+                x, y, physical_width, physical_height, subpixel);
+    }
+    
+    void output_listener_mode(void *data,
+            struct wl_output *wl_output,
+            uint32_t flags,
+            int32_t width,
+            int32_t height,
+            int32_t refresh)
+    {
+        printf("\t\t%dx%d %d Hz\n", width, height, refresh);
+    }
+    
+    void output_listener_done(void *data,
+            struct wl_output *wl_output)
+    {
+        printf("\t\tDone\n");
+    }
+    
+    void output_listener_scale(void *data,
+            struct wl_output *wl_output,
+            int32_t factor)
+    {
+        printf("\t\tScale: %d\n", factor);
+    }
+
+El ejemplo completo es el siguiente:
+
+    // gcc -o tut1 tut1.c -lwayland-client
+    
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <wayland-client.h>
+    
+    
+    ////////////////////////////////////////////////////////////
+    // Estructura de datos para almacenar recursos
+    
+    struct Datos {
+        struct wl_seat *seat;
+        struct wl_output *output;
+        struct wl_output_listener *output_listener;
+    };
+    
+    // Constructor struct Datos
+    struct Datos *datos_new()
+    {
+        struct Datos *datos = (struct Datos*)malloc(sizeof(struct Datos));
+        datos->seat = NULL;
+        datos->output = NULL;
+        datos->output_listener = NULL;
+    
+        return datos;
+    }
+    
+    // Destructor struct Datos
+    void datos_delete(struct Datos *datos)
+    {
+        free(datos);
+    }
+    
+    
+    ///////////////////////////////////////////////////////////
+    // struct wl_output_listener
+    
+    /**
+     * properties of the output
+     *
+     * The geometry event describes geometric properties of the
+     * output. The event is sent when binding to the output object and
+     * whenever any of the properties change.
+     *
+     * The physical size can be set to zero if it doesn't make sense
+     * for this output (e.g. for projectors or virtual outputs).
+     *
+     * Note: wl_output only advertises partial information about the
+     * output position and identification. Some compositors, for
+     * instance those not implementing a desktop-style output layout or
+     * those exposing virtual outputs, might fake this information.
+     * Instead of using x and y, clients should use
+     * xdg_output.logical_position. Instead of using make and model,
+     * clients should use xdg_output.name and xdg_output.description.
+     * @param x x position within the global compositor space
+     * @param y y position within the global compositor space
+     * @param physical_width width in millimeters of the output
+     * @param physical_height height in millimeters of the output
+     * @param subpixel subpixel orientation of the output
+     * @param make textual description of the manufacturer
+     * @param model textual description of the model
+     * @param transform transform that maps framebuffer to output
+     */
+    void output_listener_geometry(void *data,
+            struct wl_output *wl_output,
+            int32_t x,
+            int32_t y,
+            int32_t physical_width,
+            int32_t physical_height,
+            int32_t subpixel,
+            const char *make,
+            const char *model,
+            int32_t transform)
+    {
+        printf("Manofacturer: %s\tmodel: %s\ttransform: %d\n",
+                make, model, transform);
+        printf("\tx: %d\ty: %d\twidth(mm): %d\theight(mm): %d\tsubpixel: %d\n",
+                x, y, physical_width, physical_height, subpixel);
+    }
+    /**
+     * advertise available modes for the output
+     *
+     * The mode event describes an available mode for the output.
+     *
+     * The event is sent when binding to the output object and there
+     * will always be one mode, the current mode. The event is sent
+     * again if an output changes mode, for the mode that is now
+     * current. In other words, the current mode is always the last
+     * mode that was received with the current flag set.
+     *
+     * Non-current modes are deprecated. A compositor can decide to
+     * only advertise the current mode and never send other modes.
+     * Clients should not rely on non-current modes.
+     *
+     * The size of a mode is given in physical hardware units of the
+     * output device. This is not necessarily the same as the output
+     * size in the global compositor space. For instance, the output
+     * may be scaled, as described in wl_output.scale, or transformed,
+     * as described in wl_output.transform. Clients willing to retrieve
+     * the output size in the global compositor space should use
+     * xdg_output.logical_size instead.
+     *
+     * The vertical refresh rate can be set to zero if it doesn't make
+     * sense for this output (e.g. for virtual outputs).
+     *
+     * Clients should not use the refresh rate to schedule frames.
+     * Instead, they should use the wl_surface.frame event or the
+     * presentation-time protocol.
+     *
+     * Note: this information is not always meaningful for all outputs.
+     * Some compositors, such as those exposing virtual outputs, might
+     * fake the refresh rate or the size.
+     * @param flags bitfield of mode flags
+     * @param width width of the mode in hardware units
+     * @param height height of the mode in hardware units
+     * @param refresh vertical refresh rate in mHz
+     */
+    void output_listener_mode(void *data,
+            struct wl_output *wl_output,
+            uint32_t flags,
+            int32_t width,
+            int32_t height,
+            int32_t refresh)
+    {
+        printf("\t\t%dx%d %d Hz\n", width, height, refresh);
+    }
+    /**
+     * sent all information about output
+     *
+     * This event is sent after all other properties have been sent
+     * after binding to the output object and after any other property
+     * changes done after that. This allows changes to the output
+     * properties to be seen as atomic, even if they happen via
+     * multiple events.
+     * @since 2
+     */
+    void output_listener_done(void *data,
+            struct wl_output *wl_output)
+    {
+        printf("\t\tDone\n");
+    }
+    /**
+     * output scaling properties
+     *
+     * This event contains scaling geometry information that is not
+     * in the geometry event. It may be sent after binding the output
+     * object or if the output scale changes later. If it is not sent,
+     * the client should assume a scale of 1.
+     *
+     * A scale larger than 1 means that the compositor will
+     * automatically scale surface buffers by this amount when
+     * rendering. This is used for very high resolution displays where
+     * applications rendering at the native resolution would be too
+     * small to be legible.
+     *
+     * It is intended that scaling aware clients track the current
+     * output of a surface, and if it is on a scaled output it should
+     * use wl_surface.set_buffer_scale with the scale of the output.
+     * That way the compositor can avoid scaling the surface, and the
+     * client can supply a higher detail image.
+     * @param factor scaling factor of output
+     * @since 2
+     */
+    void output_listener_scale(void *data,
+            struct wl_output *wl_output,
+            int32_t factor)
+    {
+        printf("\t\tScale: %d\n", factor);
+    }
+    
+    struct wl_output_listener *output_listener_new(struct Datos *datos, struct wl_output *output)
+    {
+        struct wl_output_listener *output_listener = (struct wl_output_listener*)malloc(sizeof(struct wl_output_listener));
+    
+        output_listener->geometry = output_listener_geometry;
+        output_listener->mode = output_listener_mode;
+        output_listener->scale = output_listener_scale;
+        output_listener->done = output_listener_done;
+    
+        datos->output_listener = output_listener;
+    
+        wl_output_add_listener(output, output_listener, datos);
+    
+        return output_listener;
+    }
+    
+    ////////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de registry_listener
+    
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        // Se obtiene la struct Datos
+        struct Datos *datos = (struct Datos*) data;
+    
+        printf("Got a registry event for %s id %d\n", interface, id);
+        
+        // Se busca el recurso
+        if(!strcmp(interface, "wl_seat")) {
+            // Se solicita el objeto wl_seat
+            datos->seat = wl_registry_bind(registry, id, &wl_seat_interface, version);
+        } else if(!strcmp(interface, "wl_output")) {
+            datos->output = wl_registry_bind(registry, id, &wl_output_interface, version);
+    
+            // Se registra el escuchador de los eventos del servidor para wl_output
+            datos->output_listener = output_listener_new(datos, datos->output);
+        }
+    
+    }
+    
+    static void
+    registry_listener_remove(void *data, struct wl_registry *registry, uint32_t id)
+    {
+        printf("Got a registry losing event for %d\n", id);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    
+    int main(int argc, char **argv)
+    {
+    
+        struct wl_display *display = wl_display_connect(NULL);
+        if (display == NULL) {
+            fprintf(stderr, "Can't connect to display\n");
+            exit(1);
+        }
+        printf("connected to display\n");
+    
+        // Se crea la estructura para almacenar los protocolos
+        struct Datos *datos = datos_new();
+    
+        // Se crea el eschador de wl_registry
+        struct wl_registry_listener registry_listener;
+        registry_listener.global = registry_listener_global;
+        registry_listener.global_remove = registry_listener_remove;
+    
+        // Se obtiene el objeto wl_registry 
+        struct wl_registry *registry = wl_display_get_registry(display);
+        // Se le añade el escuchador recién creado
+        wl_registry_add_listener(registry, &registry_listener, datos);
+    
+        // Se solicita que se envíen las peticiones desde el cliente al servidor
+        wl_display_dispatch(display);
+        // Se bloquea hasta que se procesen los eventos
+        wl_display_roundtrip(display);
+    
+        wl_display_disconnect(display);
+        printf("disconnected from display\n");
+        
+        return 0;
+    }
+
+La salida del ejemplo, en mi caso, es la siguiente:
+
+    connected to display
+    Got a registry event for wl_shm id 1
+    ...
+    Got a registry event for wl_output id 36
+    Manofacturer: <Unknown> model: <Unknown>        transform: 0
+            x: 0    y: 0    width(mm): 228  height(mm): 152 subpixel: 2
+                    1920x1280 60003 Hz
+                    Scale: 1
+                    Done
+    disconnected from display
+
+En el ejemplo, se puede ver que se ha modificado struct Datos para incluir la nueva información y se han introducido funciones para hacer más legible el código a la hora de crear struct wl_output_listener.
+
+En este ejemplo, sólo se consultaban datos de wl_output, pues este protocolo no permite más. Se va ha hacer otro ejemplo con el protocolo foreign_toplevel_manager que permite hacer consultar y también peticiones al servidor.
+
+
+Bucle de eventos
+----------------
+
+Los eventos que lanza el servidor deben ser capturados, para ello hay que ejecutar de forma continua la función wl_display_dispatch:
+
+    while (wl_display_dispatch(display) != -1) 
+        continue;
+    
+Como ya se ha dicho, wl_display_dispatch manda las peticiones pendientes del cliente al servidor y el procesa los eventos que quedasen pendientes del servidor.
+
+Con la función:
+
+    wl_display_roundtrip(display);
+
+Se puede bloquear al cliente hasta que todas las peticiones que ha realizado, y que se guardan en una cola, sean procesadas.
+
+Protocolos y wayland-scanner
+----------------------------
+
+Hasta ahora los protocolos eran los estándar de Wayland (wl_display, wl_seat, wl_output). Pero lo más habitual es que los protocolos vengan definidos por archivos XML que los describen y que se deben procesar con una herramienta llamada wayland-scanner.
+
+Si en nuestro equipo se tiene instalado un servidor Wayland y se consulta la carpeta "/usr/share/wayland-protocols" existen dos subcarpetas llamadas stable y unstable. En estas carpetas se encuentran diversos archivos XML con dichos protocolos. En el momento de escribir este manual, dentro de los protocolos inestables se encontraba "wlr-foreign-toplevel-management-unstable-v1.xml" que se puede consultar en el siguiente enlace:
+https://github.com/swaywm/wlr-protocols/blob/master/unstable/wlr-foreign-toplevel-management-unstable-v1.xml
+
+Antes de continuar, hay que echar un ojo al contenido de "wlr-foreign-toplevel-management-unstable-v1.xml".
+
+Este protocolo se usa para gestionar ventanas, activarlas, maximizarlas, minimizarlas,... las típicas acciones que se realizan en la barra de tareas. Se va a hacer un ejemplo en el que se mostrarán las ventanas abiertas y se activará la que se seleccione.
+
+Lo primero que se debe hacer es traducir el archivo "wlr-foreign-toplevel-management-unstable-v1.xml" a C. Para ello se usa la herramienta wayland-scanner ejecutando lo siguiente por línea de comandos:
+
+    $ protocol=wlr-foreign-toplevel-management-unstable-v1
+    $ wayland-scanner client-header "$protocol".xml wayland-$protocol-client-protocol.h
+    $ wayland-scanner private-code "$protocol".xml wayland-$protocol-protocol.c
+
+Se generarán dos archivos "wayland-wlr-foreign-toplevel-management-unstable-v1-client-protocol.h" y "wayland-wlr-foreign-toplevel-management-unstable-v1-protocol.c". Se recomienda consultar sus contenidos antes de continuar leyendo este manual. Ambos archivos deben ser incorporados a nuestro proyecto.
+
+El protocolo "wlr-foreign_toplevel-management" tiene dos clases importantes:
+ - struct zwlr_foreign_toplevel_manager_v1 es la clase que va a permitir acceder a las funciones del protocolo. Por supuesto tiene asociado un escuchador struct zwlr_foreign_toplevel_manager_v1_listener. Usando este escuchador se pueden obtener el listado de ventanas disponibles a través del siguiente objeto.
+ - struct zwlr_foreign_toplevel_handle_v1 representa una ventana. Con esta clase se pueden enviar al servidor peticiones para hacer que la ventana se active, maximice,... Tiene un escuchador asociado struct zwlr_foreign_toplevel_handle_v1_listener. Con el escuchador el servidor primero enviará el título y estado de la ventana. Después enviará un evento cada vez que cambie el estado de dicha ventana (activado, maximizado,...).
+
+Del código de "wayland-wlr-foreign-toplevel-management-unstable-v1-client-protocol.h" que se ha generado se puede ver struct zwlr_foreign_toplevel_manager_v1_listener: 
+
+    struct zwlr_foreign_toplevel_manager_v1_listener {
+    
+        void (*toplevel)(void *data,
+                 struct zwlr_foreign_toplevel_manager_v1 *zwlr_foreign_toplevel_manager_v1,
+                 struct zwlr_foreign_toplevel_handle_v1 *toplevel);
+    
+        void (*finished)(void *data,
+                 struct zwlr_foreign_toplevel_manager_v1 *zwlr_foreign_toplevel_manager_v1);
+    }
+
+Para registrar el escuchador correspondiente, se usará el método:
+
+    static inline int
+    zwlr_foreign_toplevel_manager_v1_add_listener(struct zwlr_foreign_toplevel_manager_v1 *zwlr_foreign_toplevel_manager_v1,
+        const struct zwlr_foreign_toplevel_manager_v1_listener *listener, void *data)
+
+Cada vez que se envíe un evento "toplevel" (se enviará uno por cada ventana que se tenga abierta) se ejecutará la función correspondiente que permitirá obtener la struct zwlr_foreign_toplevel_handle_v1 para poder gestionar la ventana asociada a dicho objeto.
+
+El evento "finished" se enviará cuando se borre el objeto zwlr_foreign_toplevel_manager_v1.
+
+Con la siguiente función se pueden asignar los datos de struct Datos:
+
+    static inline void
+    zwlr_foreign_toplevel_manager_v1_set_user_data(struct zwlr_foreign_toplevel_manager_v1 *zwlr_foreign_toplevel_manager_v1, void *user_data)
+
+Una vez que se tenga el struct zwlr_foreign_toplevel_handle_v1 de la ventana se puede crear y registrar su escuchador asociado que como se puede ver tiene muchos eventos para saber el título, estado,...:
+
+    struct zwlr_foreign_toplevel_handle_v1_listener {
+        /**
+         * title change
+         *
+         * This event is emitted whenever the title of the toplevel
+         * changes.
+         */
+        void (*title)(void *data,
+                  struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1,
+                  const char *title);
+        /**
+         * app-id change
+         *
+         * This event is emitted whenever the app-id of the toplevel
+         * changes.
+         */
+        void (*app_id)(void *data,
+                   struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1,
+                   const char *app_id);
+        /**
+         * toplevel entered an output
+         *
+         * This event is emitted whenever the toplevel becomes visible on
+         * the given output. A toplevel may be visible on multiple outputs.
+         */
+        void (*output_enter)(void *data,
+                     struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1,
+                     struct wl_output *output);
+        /**
+         * toplevel left an output
+         *
+         * This event is emitted whenever the toplevel stops being
+         * visible on the given output. It is guaranteed that an
+         * entered-output event with the same output has been emitted
+         * before this event.
+         */
+        void (*output_leave)(void *data,
+                     struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1,
+                     struct wl_output *output);
+        /**
+         * the toplevel state changed
+         *
+         * This event is emitted immediately after the
+         * zlw_foreign_toplevel_handle_v1 is created and each time the
+         * toplevel state changes, either because of a compositor action or
+         * because of a request in this protocol.
+         */
+        void (*state)(void *data,
+                  struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1,
+                  struct wl_array *state);
+        /**
+         * all information about the toplevel has been sent
+         *
+         * This event is sent after all changes in the toplevel state
+         * have been sent.
+         *
+         * This allows changes to the zwlr_foreign_toplevel_handle_v1
+         * properties to be seen as atomic, even if they happen via
+         * multiple events.
+         */
+        void (*done)(void *data,
+                 struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1);
+        /**
+         * this toplevel has been destroyed
+         *
+         * This event means the toplevel has been destroyed. It is
+         * guaranteed there won't be any more events for this
+         * zwlr_foreign_toplevel_handle_v1. The toplevel itself becomes
+         * inert so any requests will be ignored except the destroy
+         * request.
+         */
+        void (*closed)(void *data,
+                   struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1);
+        /**
+         * parent change
+         *
+         * This event is emitted whenever the parent of the toplevel
+         * changes.
+         *
+         * No event is emitted when the parent handle is destroyed by the
+         * client.
+         * @since 3
+         */
+        void (*parent)(void *data,
+                   struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1,
+                   struct zwlr_foreign_toplevel_handle_v1 *parent);
+    };
+
+Este escuchador se puede registrar usando la función:
+
+    static inline int
+    zwlr_foreign_toplevel_handle_v1_add_listener(struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1,
+        const struct zwlr_foreign_toplevel_handle_v1_listener *listener, void *data)
+
+Es importante la siguiente función para asociar la struct Datos en la que se va a guardar la información:
+
+    static inline void
+    zwlr_foreign_toplevel_handle_v1_set_user_data(struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1, void *user_data)
+
+
+También se pueden usar las funciones siguientes para enviar peticiones al servidor de activar, maximizar,...:
+    /**
+     * @ingroup iface_zwlr_foreign_toplevel_handle_v1
+     *
+     * Requests that the toplevel be maximized. If the maximized state actually
+     * changes, this will be indicated by the state event.
+     */
+    static inline void
+    zwlr_foreign_toplevel_handle_v1_set_maximized(struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1)
+   
+    /**
+     * @ingroup iface_zwlr_foreign_toplevel_handle_v1
+     *
+     * Requests that the toplevel be unmaximized. If the maximized state actually
+     * changes, this will be indicated by the state event.
+     */
+    static inline void
+    zwlr_foreign_toplevel_handle_v1_unset_maximized(struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1)
+   
+    /**
+     * @ingroup iface_zwlr_foreign_toplevel_handle_v1
+     *
+     * Requests that the toplevel be minimized. If the minimized state actually
+     * changes, this will be indicated by the state event.
+     */
+    static inline void
+    zwlr_foreign_toplevel_handle_v1_set_minimized(struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1)
+   
+    /**
+     * @ingroup iface_zwlr_foreign_toplevel_handle_v1
+     *
+     * Requests that the toplevel be unminimized. If the minimized state actually
+     * changes, this will be indicated by the state event.
+     */
+    static inline void
+    zwlr_foreign_toplevel_handle_v1_unset_minimized(struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1)
+   
+    /**
+     * @ingroup iface_zwlr_foreign_toplevel_handle_v1
+     *
+     * Request that this toplevel be activated on the given seat.
+     * There is no guarantee the toplevel will be actually activated.
+     */
+    static inline void
+    zwlr_foreign_toplevel_handle_v1_activate(struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1, struct wl_seat *seat)
+   
+    /**
+     * @ingroup iface_zwlr_foreign_toplevel_handle_v1
+     *
+     * Send a request to the toplevel to close itself. The compositor would
+     * typically use a shell-specific method to carry out this request, for
+     * example by sending the xdg_toplevel.close event. However, this gives
+     * no guarantees the toplevel will actually be destroyed. If and when
+     * this happens, the zwlr_foreign_toplevel_handle_v1.closed event will
+     * be emitted.
+     */
+    static inline void
+    zwlr_foreign_toplevel_handle_v1_close(struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1)
+   
+    /**
+     * @ingroup iface_zwlr_foreign_toplevel_handle_v1
+     *
+     * The rectangle of the surface specified in this request corresponds to
+     * the place where the app using this protocol represents the given toplevel.
+     * It can be used by the compositor as a hint for some operations, e.g
+     * minimizing. The client is however not required to set this, in which
+     * case the compositor is free to decide some default value.
+     *
+     * If the client specifies more than one rectangle, only the last one is
+     * considered.
+     *
+     * The dimensions are given in surface-local coordinates.
+     * Setting width=height=0 removes the already-set rectangle.
+     */
+    static inline void
+    zwlr_foreign_toplevel_handle_v1_set_rectangle(struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1, struct wl_surface *surface, int32_t x, int32_t y, int32_t width, int32_t height)
+   
+    /**
+     * @ingroup iface_zwlr_foreign_toplevel_handle_v1
+     *
+     * Destroys the zwlr_foreign_toplevel_handle_v1 object.
+     *
+     * This request should be called either when the client does not want to
+     * use the toplevel anymore or after the closed event to finalize the
+     * destruction of the object.
+     */
+    static inline void
+    zwlr_foreign_toplevel_handle_v1_destroy(struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1)
+   
+    /**
+     * @ingroup iface_zwlr_foreign_toplevel_handle_v1
+     *
+     * Requests that the toplevel be fullscreened on the given output. If the
+     * fullscreen state and/or the outputs the toplevel is visible on actually
+     * change, this will be indicated by the state and output_enter/leave
+     * events.
+     *
+     * The output parameter is only a hint to the compositor. Also, if output
+     * is NULL, the compositor should decide which output the toplevel will be
+     * fullscreened on, if at all.
+     */
+    static inline void
+    zwlr_foreign_toplevel_handle_v1_set_fullscreen(struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1, struct wl_output *output)
+   
+    /**
+     * @ingroup iface_zwlr_foreign_toplevel_handle_v1
+     *
+     * Requests that the toplevel be unfullscreened. If the fullscreen state
+     * actually changes, this will be indicated by the state event.
+     */
+    static inline void
+    zwlr_foreign_toplevel_handle_v1_unset_fullscreen(struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1)
+   
+
+Finalmente se incluye el ejemplo, que obtiene las ventanas abiertas, las guarda en una lista y se queda escuchando el bucle de eventos de forma indefinida para mostrar las ventanas que han cambiado de estado. Si se encuentra la aplicación Firefox, se activa (como ejemplo de cómo activar las ventanas):
+
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <wayland-client.h>
+    #include "wayland-wlr-foreign-toplevel-management-unstable-v1-client-protocol.h"
+    
+    ////////////////////////////////////////////////////////////
+    // Estructura de datos para almacenar recursos
+    
+    // Lista para almacenar las ventanas
+    struct ListaVentanas {
+        // Manejador de la ventana
+        struct zwlr_foreign_toplevel_handle_v1 *top_level_handle;
+        // Eventos de la ventana
+        struct zwlr_foreign_toplevel_handle_v1_listener *top_level_handle_listener;
+        // Título
+        char *title;
+        char *app_id;
+        struct ListaVentanas *next;
+    };
+    
+    
+    struct Datos {
+        struct wl_seat *seat;
+        struct wl_output *output;
+        struct zwlr_foreign_toplevel_manager_v1 *top_level;
+        struct zwlr_foreign_toplevel_manager_v1_listener *top_level_listener;
+        struct ListaVentanas *lista_ventanas;
+        struct zwlr_foreign_toplevel_handle_v1 *firefox_handle;
+    };
+    
+    // Constructor ListaVentanas
+    struct ListaVentanas *lista_ventanas_new()
+    {
+        struct ListaVentanas *lista = (struct ListaVentanas*)malloc(sizeof(struct ListaVentanas));
+        lista->top_level_handle = NULL;
+        lista->top_level_handle_listener = NULL;
+        lista->title = NULL;
+        lista->app_id = NULL;
+        lista->next = NULL;
+        return lista;
+    }
+    
+    void lista_ventanas_delete(struct ListaVentanas *lista)
+    {
+        free(lista->title);
+        free(lista->app_id);
+        free(lista);
+    }
+    
+    // Constructor struct Datos
+    struct Datos *datos_new()
+    {
+        struct Datos *datos = (struct Datos*)malloc(sizeof(struct Datos));
+        datos->seat = NULL;
+        datos->output = NULL;
+        datos->top_level = NULL;
+        datos->top_level_listener = NULL;
+        datos->lista_ventanas = NULL;
+    
+        return datos;
+    }
+    
+    // Destructor struct Datos
+    void datos_delete(struct Datos *datos)
+    {
+        // Se borra la lista de ventanas
+        struct ListaVentanas *lista = datos->lista_ventanas, *siguiente;
+        while(lista != NULL) {
+            siguiente = lista->next;
+            lista_ventanas_delete(lista);
+            lista = siguiente;
+        }
+        free(datos);
+    }
+    
+    ///////////////////////////////////////
+    // Implementación de struct zwlr_foreign_toplevel_handle_v1_listener *listener
+    /**
+     * title change
+     *
+     * This event is emitted whenever the title of the toplevel
+     * changes.
+     */
+    void top_level_handle_listener_title(void *data,
+    		      struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1,
+    		      const char *title)
+    {
+        printf("\n\t\t[top_level_handle_listener_title] %s\n", title);
+        // Se busca la ventana en la lista de ventanas para actualizar el título
+        struct Datos *datos = (struct Datos*)data;
+        struct ListaVentanas *lista = datos->lista_ventanas;
+        while(lista != NULL) {
+            if(lista->top_level_handle == zwlr_foreign_toplevel_handle_v1) {
+                // Ventana encontrada, se actualiza el título
+                free(lista->title); // Se borra el título anterior
+                lista->title = strdup(title);
+                break;
+            }
+            lista = lista->next;
+        }
+    }
+    
+    /**
+     * app-id change
+     *
+     * This event is emitted whenever the app-id of the toplevel
+     * changes.
+     */
+    void top_level_handle_listener_app_id(void *data,
+    		       struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1,
+    		       const char *app_id)
+    {
+        printf("\t\t[top_level_handle_listener_app_id] %s\n", app_id);
+        struct Datos *datos = (struct Datos*) data;
+        if(!strncmp(app_id, "firefox", 7)) {
+            datos->firefox_handle = zwlr_foreign_toplevel_handle_v1;
+            printf("\t\t\tFirefox encontrado\n");
+        }
+        // Se busca la ventana en la lista de ventanas para actualizar el app_id
+        struct ListaVentanas *lista = datos->lista_ventanas;
+        while(lista != NULL) {
+            if(lista->top_level_handle == zwlr_foreign_toplevel_handle_v1) {
+                // Ventana encontrada, se actualiza el título
+                free(lista->app_id); // Se borra el título anterior
+                lista->app_id = strdup(app_id);
+                break;
+            }
+            lista = lista->next;
+        }
+    }
+    
+    /**
+     * toplevel entered an output
+     *
+     * This event is emitted whenever the toplevel becomes visible on
+     * the given output. A toplevel may be visible on multiple outputs.
+     */
+    void top_level_handle_listener_output_enter(void *data,
+            struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1,
+            struct wl_output *output)
+    {
+        printf("\t\t[top_level_handle_listener_output_enter]\n");
+    }
+    
+    /**
+     * toplevel left an output
+     *
+     * This event is emitted whenever the toplevel stops being
+     * visible on the given output. It is guaranteed that an
+     * entered-output event with the same output has been emitted
+     * before this event.
+     */
+    void top_level_handle_listener_output_leave(void *data,
+            struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1,
+            struct wl_output *output)
+    {
+        printf("\t\t[top_level_handle_listener_output_leave]\n");
+    }
+    
+    /**
+     * the toplevel state changed
+     *
+     * This event is emitted immediately after the
+     * zlw_foreign_toplevel_handle_v1 is created and each time the
+     * toplevel state changes, either because of a compositor action or
+     * because of a request in this protocol.
+     */
+    void top_level_handle_listener_state(void *data,
+            struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1,
+            struct wl_array *state)
+    {
+        struct Datos *datos = (struct Datos*) data;
+        printf("\t\t[top_level_handle_listener_state]\n");
+    
+        // Se busca el título y el app_id de la ventana
+        struct ListaVentanas *lista = datos->lista_ventanas;
+        while(lista != NULL) {
+            if(lista->top_level_handle == zwlr_foreign_toplevel_handle_v1) {
+                // Ventana encontrada
+                printf("\t\t");
+                if(lista->app_id != NULL)
+                    printf("%s: ", lista->app_id);
+                if(lista->title != NULL)
+                    printf("%s", lista->title);
+                printf("\n");
+                break;
+            }
+            lista = lista->next;
+        }
+    
+        // Se interpretan los estados de la ventana
+        enum zwlr_foreign_toplevel_handle_v1_state  *s;
+        wl_array_for_each(s, state) {
+            printf("\t\t\tState: %d ", *s);
+            if(*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MAXIMIZED)
+                printf("maximized\n");
+            else if(*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED)
+                printf("minimized\n");
+            else if(*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED)
+                printf("activated\n");
+            else if(*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_FULLSCREEN)
+                printf("fullscreen\n");
+        }
+    }
+    
+    /**
+     * all information about the toplevel has been sent
+     *
+     * This event is sent after all changes in the toplevel state
+     * have been sent.
+     *
+     * This allows changes to the zwlr_foreign_toplevel_handle_v1
+     * properties to be seen as atomic, even if they happen via
+     * multiple events.
+     */
+    void top_level_handle_listener_done(void *data,
+            struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1)
+    {
+        printf("\t\t[top_level_handle_listener_done]\n");
+    }
+    
+    /**
+     * this toplevel has been destroyed
+     *
+     * This event means the toplevel has been destroyed. It is
+     * guaranteed there won't be any more events for this
+     * zwlr_foreign_toplevel_handle_v1. The toplevel itself becomes
+     * inert so any requests will be ignored except the destroy
+     * request.
+     */
+    void top_level_handle_listener_closed(void *data,
+            struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1)
+    {
+        printf("\t\t[top_level_handle_listener_closed]\n");
+    
+        // La ventana ha sido cerrada, se elimina de la lista de ventanas
+        struct Datos *datos = (struct Datos*) data;
+        struct ListaVentanas *lista = datos->lista_ventanas, *anterior = NULL;
+        while(lista != NULL) {
+            if(lista->top_level_handle == zwlr_foreign_toplevel_handle_v1) {
+                // Ventana encontrada se elimina de la lista de ventanas
+                if(anterior != NULL) {
+                    anterior->next = lista->next;
+                } else {
+                    // Es la única ventana
+                    datos->lista_ventanas = NULL;
+                }
+                lista_ventanas_delete(lista);
+                break;
+            }
+            anterior = lista;
+            lista = lista->next;
+        }
+    }
+    
+    /**
+     * parent change
+     *
+     * This event is emitted whenever the parent of the toplevel
+     * changes.
+     *
+     * No event is emitted when the parent handle is destroyed by the
+     * client.
+     * @since 3
+     */
+    void top_level_handle_listener_parent(void *data,
+            struct zwlr_foreign_toplevel_handle_v1 *zwlr_foreign_toplevel_handle_v1,
+            struct zwlr_foreign_toplevel_handle_v1 *parent)
+    {
+        printf("\t\t[top_level_handle_listener_parent]\n");
+    }
+    
+    
+    ///////////////////////////////////////
+    // Implementación del zwlr_foreign_toplevel_manager_v1_listener
+    
+    void top_level_listener_toplevel(void *data,
+    			 struct zwlr_foreign_toplevel_manager_v1 *zwlr_foreign_toplevel_manager_v1,
+    			 struct zwlr_foreign_toplevel_handle_v1 *toplevel)
+    {
+        struct Datos *datos = (struct Datos*) data;
+        printf("\t[top_level_listener_toplevel] Init\n");
+    
+        // Se inicia un nuevo elemento de la lista de ventanas
+        struct ListaVentanas *ventana = lista_ventanas_new();
+    
+        ventana->top_level_handle = toplevel;
+    
+        // Se crea un escuchador para los eventos de la ventana
+        ventana->top_level_handle_listener = (struct zwlr_foreign_toplevel_handle_v1_listener*)malloc(sizeof(struct zwlr_foreign_toplevel_handle_v1_listener));
+        ventana->top_level_handle_listener->title = top_level_handle_listener_title;
+        ventana->top_level_handle_listener->app_id = top_level_handle_listener_app_id;
+        ventana->top_level_handle_listener->output_enter = top_level_handle_listener_output_enter;
+        ventana->top_level_handle_listener->output_leave = top_level_handle_listener_output_leave;
+        ventana->top_level_handle_listener->state = top_level_handle_listener_state;
+        ventana->top_level_handle_listener->done = top_level_handle_listener_done;
+        ventana->top_level_handle_listener->closed = top_level_handle_listener_closed;
+        ventana->top_level_handle_listener->parent = top_level_handle_listener_parent;
+    
+        // Se registra el escuchador recién creado
+        zwlr_foreign_toplevel_handle_v1_add_listener(ventana->top_level_handle, ventana->top_level_handle_listener, datos);
+       
+        // Se almacena la ventana en la lista de ventanas
+        ventana->next = datos->lista_ventanas;
+        datos->lista_ventanas = ventana;
+    }
+    
+    void top_level_listener_finished(void *data,
+    			 struct zwlr_foreign_toplevel_manager_v1 *zwlr_foreign_toplevel_manager_v1)
+    {
+    }
+    ///////////////////////////////////////
+    
+    
+    
+    ////////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de registry_listener
+    
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        // Se obtiene la struct Datos
+        struct Datos *datos = (struct Datos*) data;
+    
+        printf("Got a registry event for %s id %d\n", interface, id);
+        
+        // Se busca el recurso
+        if(!strcmp(interface, "wl_seat")) {
+            // Se solicita el objeto wl_seat
+            datos->seat = wl_registry_bind(registry, id, &wl_seat_interface, version);
+        } else if(!strcmp(interface, "wl_output")) {
+            datos->output = wl_registry_bind(registry, id, &wl_output_interface, version);
+        } else if(strcmp(interface, "zwlr_foreign_toplevel_manager_v1") == 0) {
+            datos->top_level = wl_registry_bind(registry, id, &zwlr_foreign_toplevel_manager_v1_interface, version);
+            datos->top_level_listener = (struct zwlr_foreign_toplevel_manager_v1_listener*)malloc(sizeof(struct zwlr_foreign_toplevel_manager_v1_listener));
+            datos->top_level_listener->toplevel = top_level_listener_toplevel;
+            datos->top_level_listener->finished = top_level_listener_finished;
+            zwlr_foreign_toplevel_manager_v1_add_listener(datos->top_level, datos->top_level_listener, datos);
+        }
+    
+    }
+    
+    static void
+    registry_listener_remove(void *data, struct wl_registry *registry, uint32_t id)
+    {
+        printf("Got a registry losing event for %d\n", id);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    
+    int main(int argc, char **argv)
+    {
+    
+        struct wl_display *display = wl_display_connect(NULL);
+        if (display == NULL) {
+            fprintf(stderr, "Can't connect to display\n");
+            exit(1);
+        }
+        printf("connected to display\n");
+    
+        // Se crea la estructura para almacenar los protocolos
+        struct Datos *datos = datos_new();
+    
+        // Se crea el eschador de wl_registry
+        struct wl_registry_listener registry_listener;
+        registry_listener.global = registry_listener_global;
+        registry_listener.global_remove = registry_listener_remove;
+    
+        // Se obtiene el objeto wl_registry 
+        struct wl_registry *registry = wl_display_get_registry(display);
+        // Se le añade el escuchador recién creado
+        wl_registry_add_listener(registry, &registry_listener, datos);
+    
+        // Se solicita que se envíen las peticiones desde el cliente al servidor
+        wl_display_dispatch(display);
+        // Se bloquea hasta que se procesen los eventos
+        wl_display_roundtrip(display);
+    
+        if(datos->firefox_handle != NULL) {
+            // Se hacen las peticiones para gestionar Firefox
+            // Se activa
+            zwlr_foreign_toplevel_handle_v1_activate(datos->firefox_handle, datos->seat);
+            // Si se descomenta la siguiente línea, firefox se cierra
+            //zwlr_foreign_toplevel_handle_v1_close(datos->firefox_handle);
+        } else
+            printf("Firefox no ha sido encontrada\n");
+    
+        wl_display_dispatch(display);
+        wl_display_roundtrip(display);
+    
+        // Se escuchan los eventos hasta el final de la aplicación
+        while (wl_display_dispatch(display) != -1)
+            continue;
+    
+        wl_display_disconnect(display);
+        printf("disconnected from display\n");
+    
+        datos_delete(datos);
+        return 0;
+    }
+
+Para compilarlo se usará:
+
+    $ gcc -o toplevel *.c -lwayland-client
+
+para que también se compile "wayland-wlr-foreign-toplevel-management-unstable-v1-protocol.c". 
