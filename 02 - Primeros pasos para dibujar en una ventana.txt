@@ -1,0 +1,1025 @@
+Dibujando en la pantalla en un surface
+======================================
+
+Según la nomenglatura de Wayland, un surface es una área rectangular que puede ser mostrada en ninguna o varias salidas. Cada surface puede representar la información almacenada en un buffer, recibir los eventos de entrada del usuario y definir un sistema de coordenadas local.
+
+Para crear un objeto surface, se necesitará un objeto wl_compositor y con el método:
+
+    struct wl_surface *surface = wl_compositor_create_surface(struct wl_compositor *compositor);
+
+El objeto compositor sirve para que se envíen ventanas al servidor y que estas sean dibujadas unas con otras.
+
+Se necesitará crear también un buffer en el que se almacenará un array de pixels en la RAM. Dicho array se compartirá, mediante memoria compartida, con el servidor gráfico que se encargará de dibujarlo. Este mecanismo de compartición de memoria es muy rápido y permite que el dibujado de imágenes sea más ágil, comparado con un servidor X11. Este buffer se debe añadir al wl_surface creado.
+
+Para gestionar la ventana se usará el objeto "xdg_wm_base" dentro del protocolo xdg-shell. xdg_wm_base sirve para transformar las surface en ventanas que se pueden arrastrar, maximizar, minimizar,...
+
+Una vez que se tiene el objeto xdg_wm_base, se puede deben crear los objetos xdg_surface y xdg_toplevel.
+    struct xdg_surface *xdg_surface = xdg_wm_base_get_xdg_surface(struct xdg_wm_base *xdg_wm_base, struct wl_surface *wl_surface);
+    struct xdg_toplevel *xdg_toplevel = xdg_surface_get_toplevel(struct xdg_surface *xdg_surface);
+
+El objeto xdg_surface debe ser creado antes de asignar algún buffer al objeto wl_surface, pues si no, el cliente generará un error. Una vez creado el xdg_surface necesita que se le asigne un role dentro de la interfaz, por ejemplo, puede ser una ventana (xdg_toplevel) o un menú desplegable,...
+
+Con el objeto xdg_toplevel se puede, por ejemplo, poner título a la ventana:
+    xdg_toplevel_set_title(xdg_toplevel, "Título de la ventana");
+
+Entre otras cosas el objeto xdg_toplevel permite mover, poner el tamaño mínimo y máximo de la ventana, maximizar o desmaximizar una ventana, minimizar o desminimizar una ventana,...
+
+Para poder crear una ventana, se deberán seguir los siguientes pasos:
+
+1. Capturar las interfaces "wl_shm", "wl_compositor" y "xdg_wm_base".
+2. Se debe crear un objeto wl_shm y capturar el evento "wl_shm_listener.format" que indica cómo se colocan los colores en los bits que representarán  cada "pixel" de la imagen.
+3. Una vez que se tiene el objeto "wl_compositor", se crea el objeto wl_surface.
+4. Una vez que se tiene el objeto "xdg_wm_base" con el objeto wl_surface anterior, se crean los objetos xdg_surface y xdg_toplevel. 
+5. Una vez creado el objeto "xdg_surface", se debe escuchar su evento "xdg_surface_listener.configure", dentro de este evento:
+5.1 Se crea la memoria compartida mediante la función mmap.
+5.2 Con el objeto wl_shm se crean los objetos wl_shm_pool y wl_buffer.
+5.3 En este momento se puede poner color a cada pixel y formar la imagen que se mostrará.
+5.4 Se añade el buffer al objeto wl_surface.
+5.5 Se marca el objeto wl_surface como dañado. Se indica la zona del wl_surface que el servidor gráfico debe redibujar.
+5.6 Se ejecuta el método wl_surface_commit, para indicar que el servidor gráfico ya puede dibujar la ventana o parte de ella.
+
+Conviene memorizar estos pasos y tenerlos presentes, pues el código se puede volver extraordinariamente complejo de entender.
+
+¿Por qué se marca el objeto wl_surface como dañado? Supongamos que se está escribiendo un editor de texto, muchas veces no es necesario cambiar toda la imagen, sólo la parte correspondiente al cursor parpadeando. Esto ahorra muchos recursos al servidor gráfico que sabe exactamente que pequeña porción de imagen debe redibujar. Por ello se procurará marcar como dañada la parte de la imagen que se haya modificado.
+
+En el ejemplo que se va a desarrollar a continuación, la imagen se va a dibujar indicando el color de cada pixel:
+    datos->n++;
+    char par = (datos->n)%2;
+    uint32_t pixel1 = par ? 0xFF666666 : 0xFFEEEEEE;
+    uint32_t pixel2 = 0xFF666666;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            if ((x + y / 8 * 8) % 16 < 8)
+                datos->pixels[y * width + x] = pixel1;
+            else
+                datos->pixels[y * width + x] = pixel2;
+        }
+    }
+
+En este caso si "datos->n" es un número par se mostrará una imagen gris y si es impar se mostrará una especie de tablero de ajedrez.
+No es habitual manejar directamente el buffer, se pueden usar bibliotecas como Cairo para hacer este trabajo más sencillo, pues Cairo puede mostrar texto, dibujar líneas, rectángulos, elipses, antialias,... Se puede encontrar más información sobre la biblioteca Cairo en:
+
+https://www.cairographics.org/
+
+Repaso de cómo obtener un interfaz en Wayland
+---------------------------------------------
+
+Sea el siguiente ejemplo del capítulo anterior. En este ejemplo se puede ver cómo se solicita una interfaz a Wayland. El procedimiento es el siguiente:
+1º Se solicita el objeto wl_display:
+        struct wl_display *display = wl_display_connect(NULL);
+2º Se obtiene el objeto wl_registry y se le añade un escuchador:
+        // Se obtiene el objeto wl_registry 
+        struct wl_registry *registry = wl_display_get_registry(display);
+        // Se le añade el escuchador recién creado
+        wl_registry_add_listener(registry, &registry_listener, &datos);
+3º El escuchador de wl_registry debe atender al evento "global". El servidor Wayland lanza uno de estos eventos por cada interfaz disponible:
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        // Se obtiene la struct Datos
+        struct Datos *datos = (struct Datos*) data;
+    
+        printf("Got a registry event for %s id %d\n", interface, id);
+        
+        // Se busca el recurso
+        if(!strcmp(interface, "wl_seat")) {
+            // Se solicita el objeto wl_seat
+            datos->seat = wl_registry_bind(registry, id, &wl_seat_interface, version);
+        }
+    
+    }
+Como se puede ver es compara la cadena de caracteres "interface" con el el nombre de la interfaz que se está buscando, en este caso "wl_seat" y se obtiene usando el método "wl_registry_bind".
+
+El ejemplo completo:
+
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <wayland-client.h>
+    
+    
+    ////////////////////////////////////////////////////////////
+    // Estructura de datos para almacenar recursos
+    
+    struct Datos {
+        struct wl_seat *seat;
+    };
+    
+    
+    ////////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de registry_listener
+    
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        // Se obtiene la struct Datos
+        struct Datos *datos = (struct Datos*) data;
+    
+        printf("Got a registry event for %s id %d\n", interface, id);
+        
+        // Se busca el recurso
+        if(!strcmp(interface, "wl_seat")) {
+            // Se solicita el objeto wl_seat
+            datos->seat = wl_registry_bind(registry, id, &wl_seat_interface, version);
+        }
+    
+    }
+    
+    static void
+    registry_listener_remove(void *data, struct wl_registry *registry, uint32_t id)
+    {
+        printf("Got a registry losing event for %d\n", id);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    
+    int main(int argc, char **argv)
+    {
+    
+        struct wl_display *display = wl_display_connect(NULL);
+        if (display == NULL) {
+            fprintf(stderr, "Can't connect to display\n");
+            exit(1);
+        }
+        printf("connected to display\n");
+    
+        // Se crea la estructura para almacenar los protocolos
+        struct Datos datos;
+        datos.seat = NULL;
+    
+        // Se crea el eschador de wl_registry
+        struct wl_registry_listener registry_listener;
+        registry_listener.global = registry_listener_global;
+        registry_listener.global_remove = registry_listener_remove;
+    
+        // Se obtiene el objeto wl_registry 
+        struct wl_registry *registry = wl_display_get_registry(display);
+        // Se le añade el escuchador recién creado
+        wl_registry_add_listener(registry, &registry_listener, &datos);
+    
+        // Se solicita que se envíen las peticiones desde el cliente al servidor
+        wl_display_dispatch(display);
+        // Se bloquea hasta que se procesen los eventos
+        wl_display_roundtrip(display);
+    
+        if(datos.seat != NULL) {
+            printf("wl_seat localizado\n");
+        } else {
+            printf("wl_seat no localizado\n");
+        }
+    
+        wl_display_disconnect(display);
+        printf("disconnected from display\n");
+        
+        return 0;
+    }
+
+Cada interfaz que se obtenga tendrá que registrar un escuchador y escuchar sus eventos correspondientes. También se pueden hacer peticiones al servidor Wayland usanlo a interfaz.
+
+
+Obteniendo un wl_surface
+------------------------
+
+Basándonos en el ejemplo anterior, el procedimiento para obtener un wl_surface es obtener la interfaz para wl_compositor y ejecutar:
+    struct wl_surface *surface = wl_compositor_create_surface(struct wl_compositor *compositor);
+
+El ejemplo completo sería:
+
+// gcc -o %e %s -lwayland-client
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <wayland-client.h>
+
+
+////////////////////////////////////////////////////////////
+// Estructura de datos para almacenar recursos
+
+struct Datos {
+    struct wl_compositor *wl_compositor;
+    struct wl_surface *surface;
+};
+
+
+////////////////////////////////////////////////////////////
+// Metodos para capturar eventos de registry_listener
+
+static void
+registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+           const char *interface, uint32_t version)
+{
+    // Se obtiene la struct Datos
+    struct Datos *datos = (struct Datos*) data;
+
+    printf("Got a registry event for %s id %d\n", interface, id);
+    
+    // Se busca el recurso
+    if(!strcmp(interface, "wl_compositor")) {
+        // Se solicita el objeto wl_compositor
+        datos->wl_compositor = wl_registry_bind(registry, id, &wl_compositor_interface, version);
+        // Se genera el objeto wl_surface
+        datos->surface = wl_compositor_create_surface(datos->wl_compositor); 
+    }
+
+}
+
+static void
+registry_listener_remove(void *data, struct wl_registry *registry, uint32_t id)
+{
+    printf("Got a registry losing event for %d\n", id);
+}
+
+///////////////////////////////////////////////////////////
+
+int main(int argc, char **argv)
+{
+
+    struct wl_display *display = wl_display_connect(NULL);
+    if (display == NULL) {
+        fprintf(stderr, "Can't connect to display\n");
+        exit(1);
+    }
+    printf("connected to display\n");
+
+    // Se crea la estructura para almacenar los protocolos
+    struct Datos datos;
+    datos.wl_compositor = NULL;
+    datos.surface = NULL;
+
+    // Se crea el eschador de wl_registry
+    struct wl_registry_listener registry_listener;
+    registry_listener.global = registry_listener_global;
+    registry_listener.global_remove = registry_listener_remove;
+
+    // Se obtiene el objeto wl_registry 
+    struct wl_registry *registry = wl_display_get_registry(display);
+    // Se le añade el escuchador recién creado
+    wl_registry_add_listener(registry, &registry_listener, &datos);
+
+    // Se solicita que se envíen las peticiones desde el cliente al servidor
+    wl_display_dispatch(display);
+    // Se bloquea hasta que se procesen los eventos
+    wl_display_roundtrip(display);
+
+    if(datos.surface != NULL) {
+        printf("wl_surface localizado\n");
+    } else {
+        printf("wl_surcafe no localizado\n");
+    }
+
+    wl_display_disconnect(display);
+    printf("disconnected from display\n");
+    
+    return 0;
+}
+
+
+Obteniendo los objetos xdg_wm_base, xdg_surface y xdg_toplevel
+--------------------------------------------------------------
+
+Estas interfaces se definen en el archivo "xdg-shell.xml". Este archivo se puede localizar fácilmente en Internet o en la carpeta:
+/usr/share/wayland-protocols/stable/xdg-shell
+
+Como ya se ha comentado este protocolo define las interfaces necesarias para poder crear ventanas que se pueden maximizar, minimizar,...
+
+Lo primero que se debe hacer es traducir el archivo "xdg-shell.xml" a C. Para ello se usa la herramienta wayland-scanner ejecutando lo siguiente por línea de comandos:
+
+    $ protocol=xdg-shell
+    $ wayland-scanner client-header "$protocol".xml wayland-$protocol-client-protocol.h
+    $ wayland-scanner private-code "$protocol".xml wayland-$protocol-protocol.c
+
+Se obtendrán los archivos "wayland-xdg-shell-client-protocol.h" y  "wayland-xdg-shell-protocol.c" que se deben añadir a nuestro proyecto.
+
+Ahora se modifica el ejemplo anterior para obtener "xdg_wm_base", "xdg_surface" y "xdg_toplevel":
+
+    // gcc -o %e %s -lwayland-client   
+    #include "wayland-xdg-shell-client-protocol.h"
+    
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <wayland-client.h>
+    
+    
+    ////////////////////////////////////////////////////////////
+    // Estructura de datos para almacenar recursos
+    
+    struct Datos {
+        struct wl_compositor *wl_compositor;
+        struct wl_surface *surface;
+        struct xdg_wm_base *xdg_wm_base;
+        struct xdg_wm_base_listener xdg_wm_base_listener;
+        struct xdg_surface *xdg_surface;
+        struct xdg_surface_listener xdg_surface_listener;
+        struct xdg_toplevel *xdg_toplevel;
+    };
+    
+    
+    
+    //////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de xdg_surface_listener
+    
+    void
+    xdg_surface_listener_configure(void *data,
+    			  struct xdg_surface *xdg_surface,
+    			  uint32_t serial)
+    {
+        printf("[xdg_surface_listener_configure]\n");
+        struct Datos *datos = (struct Datos *)data;
+        // Se debe responder al evento "configure" con ack_configure:
+        xdg_surface_ack_configure(xdg_surface, serial);
+        
+        // Más delante se aquí se creará el buffer
+    }
+    
+    
+    ///////////////////////////////////////////////////////////
+    // Función para crear el wl_suface
+    
+    static void
+    crear_surface(struct Datos *datos)
+    {
+        if(datos->xdg_surface == NULL && datos->xdg_wm_base !=NULL && datos->surface != NULL) {
+            // Se crea el xdg_surface
+            datos->xdg_surface = xdg_wm_base_get_xdg_surface(datos->xdg_wm_base, datos->surface);
+            printf("xdg_surface creada\n");
+            // Se añade el listener a xdg_surface
+            datos->xdg_surface_listener.configure = xdg_surface_listener_configure;
+            xdg_surface_add_listener(datos->xdg_surface, &datos->xdg_surface_listener, datos);
+            // A partir de xdg_surface se genera una ventana, xdg_toplevel
+            datos->xdg_toplevel = xdg_surface_get_toplevel(datos->xdg_surface);
+            // Se le pone título
+            xdg_toplevel_set_title(datos->xdg_toplevel, "Ejemplo");
+            // Se indica que la ventana está lista
+            wl_surface_commit(datos->surface);
+        }
+    }
+    
+    //////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de xdg_wm_base_listener
+    
+    static void
+    xdg_wm_base_listener_ping(void *data, struct xdg_wm_base *xdg_wm_base, uint32_t serial)
+    {
+        //struct Datos *datos = (struct Datos*)data;
+        // El cliente debe contestar al ping con un pong o se considerará que el cliente
+        // no responde a los eventos
+        xdg_wm_base_pong(xdg_wm_base, serial);
+    }
+    
+    ////////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de registry_listener
+    
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        // Se obtiene la struct Datos
+        struct Datos *datos = (struct Datos*) data;
+    
+        printf("Got a registry event for %s id %d\n", interface, id);
+        
+        // Se busca el recurso
+        if(!strcmp(interface, "wl_compositor")) {
+            // Se solicita el objeto wl_compositor
+            datos->wl_compositor = wl_registry_bind(registry, id, &wl_compositor_interface, version);
+            // Se genera el objeto wl_surface
+            datos->surface = wl_compositor_create_surface(datos->wl_compositor);
+            // Se intenta crear la ventana
+            crear_surface(datos);
+        } else if(! strcmp(interface, "xdg_wm_base")) {
+            // Se obtiene el objeto xdg_wm_base
+            datos->xdg_wm_base = wl_registry_bind(registry, id, &xdg_wm_base_interface, version);
+            // Se añade el escuchador
+            datos->xdg_wm_base_listener.ping = xdg_wm_base_listener_ping;
+            xdg_wm_base_add_listener(datos->xdg_wm_base, &datos->xdg_wm_base_listener, datos);
+            // Se intenta crear la ventana
+            crear_surface(datos); 
+        }
+    
+    }
+    
+    static void
+    registry_listener_remove(void *data, struct wl_registry *registry, uint32_t id)
+    {
+        printf("Got a registry losing event for %d\n", id);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    
+    int main(int argc, char **argv)
+    {
+    
+        struct wl_display *display = wl_display_connect(NULL);
+        if (display == NULL) {
+            fprintf(stderr, "Can't connect to display\n");
+            exit(1);
+        }
+        printf("connected to display\n");
+    
+        // Se crea la estructura para almacenar los protocolos
+        struct Datos datos;
+        datos.wl_compositor = NULL;
+        datos.surface = NULL;
+        datos.xdg_surface = NULL;
+        datos.xdg_wm_base = NULL;
+        datos.xdg_toplevel = NULL;
+    
+        // Se crea el eschador de wl_registry
+        struct wl_registry_listener registry_listener;
+        registry_listener.global = registry_listener_global;
+        registry_listener.global_remove = registry_listener_remove;
+    
+        // Se obtiene el objeto wl_registry 
+        struct wl_registry *registry = wl_display_get_registry(display);
+        // Se le añade el escuchador recién creado
+        wl_registry_add_listener(registry, &registry_listener, &datos);
+    
+        // Se solicita que se envíen las peticiones desde el cliente al servidor
+        wl_display_dispatch(display);
+        // Se bloquea hasta que se procesen los eventos
+        wl_display_roundtrip(display);
+    
+        if(datos.surface != NULL) {
+            printf("wl_surface localizado\n");
+        } else {
+            printf("wl_surcafe no localizado\n");
+        }
+    
+        wl_display_disconnect(display);
+        printf("disconnected from display\n");
+        
+        return 0;
+    }
+
+Se debe compilar usando:
+    gcc -o xdg-shell *.c -lwayland-client -lrt
+
+Como se puede ver se deben implementar los eschuchadores de xdg_wm_base y xdg_surface. Según la documentación las estructuras que definen estos escuchadores son:
+
+    struct xdg_wm_base_listener {
+    	/**
+    	 * check if the client is alive
+    	 *
+    	 * The ping event asks the client if it's still alive. Pass the
+    	 * serial specified in the event back to the compositor by sending
+    	 * a "pong" request back with the specified serial. See
+    	 * xdg_wm_base.pong.
+    	 *
+    	 * Compositors can use this to determine if the client is still
+    	 * alive. It's unspecified what will happen if the client doesn't
+    	 * respond to the ping request, or in what timeframe. Clients
+    	 * should try to respond in a reasonable amount of time.
+    	 *
+    	 * A compositor is free to ping in any way it wants, but a client
+    	 * must always respond to any xdg_wm_base object it created.
+    	 * @param serial pass this to the pong request
+    	 */
+    	void (*ping)(void *data,
+    		     struct xdg_wm_base *xdg_wm_base,
+    		     uint32_t serial);
+    };
+
+
+    struct xdg_surface_listener {
+    	/**
+    	 * suggest a surface change
+    	 *
+    	 * The configure event marks the end of a configure sequence. A
+    	 * configure sequence is a set of one or more events configuring
+    	 * the state of the xdg_surface, including the final
+    	 * xdg_surface.configure event.
+    	 *
+    	 * Where applicable, xdg_surface surface roles will during a
+    	 * configure sequence extend this event as a latched state sent as
+    	 * events before the xdg_surface.configure event. Such events
+    	 * should be considered to make up a set of atomically applied
+    	 * configuration states, where the xdg_surface.configure commits
+    	 * the accumulated state.
+    	 *
+    	 * Clients should arrange their surface for the new states, and
+    	 * then send an ack_configure request with the serial sent in this
+    	 * configure event at some point before committing the new surface.
+    	 *
+    	 * If the client receives multiple configure events before it can
+    	 * respond to one, it is free to discard all but the last event it
+    	 * received.
+    	 * @param serial serial of the configure event
+    	 */
+    	void (*configure)(void *data,
+    			  struct xdg_surface *xdg_surface,
+    			  uint32_t serial);
+    };
+
+Memoria compartida y wl_buffer
+------------------------------
+
+Para terminar se necesita obtener la memoria compartida, dibujar en dicha memoria y compartirla con el servidor Wayland mediante un wl_buffer.
+
+Para compartir la memoria se usarán los mecanismos habituales de Linux mediante mmap. También se necesitará generar un descriptor de fichero con un nombre aleatorio. Las siguientes funciones serán de ayuda en el proceso:
+
+    //////////////////////////////////////////////////////////
+    // Código para crear el descriptor de fichero en el que compartir la memoria
+    #include <errno.h>
+    #include <fcntl.h>
+    #include <sys/mman.h>
+    #include <unistd.h>
+    
+    static void
+    randname(char *buf)
+    {
+        int r = rand();
+    	for (int i = 0; i < 6; ++i) {
+    		buf[i] = 'A'+(r&15)+(r&16)*2;
+    		r >>= 5;
+    	}
+    }
+    
+    static int
+    create_shm_file(void)
+    {
+    	int retries = 100;
+    	do {
+    		char name[] = "/wl_shm-XXXXXX";
+    		randname(name + sizeof(name) - 7);
+    		--retries;
+    		int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    		if (fd >= 0) {
+    			shm_unlink(name);
+    			return fd;
+    		}
+    	} while (retries > 0 && errno == EEXIST);
+    	return -1;
+    }
+    
+    int
+    allocate_shm_file(size_t size)
+    {
+    	int fd = create_shm_file();
+    	if (fd < 0)
+    		return -1;
+    	int ret;
+    	do {
+    		ret = ftruncate(fd, size);
+    	} while (ret < 0 && errno == EINTR);
+    	if (ret < 0) {
+    		close(fd);
+    		return -1;
+    	}
+    	return fd;
+    }
+
+
+Con la función "allocate_shm_file" se creará un fichero con el tamaño que se le indique que será compartirá con mmap.
+
+Lo primero que se debe hacer es capturar la interfaz de wl_shm por los mecanismos habituales y añadir un escuchador. La estructura que define el escuchador de wl_shm_listener es:
+
+    struct wl_shm_listener {
+            /**
+             * pixel format description
+             *
+             * Informs the client about a valid pixel format that can be used
+             * for buffers. Known formats include argb8888 and xrgb8888.
+             * @param format buffer pixel format
+             */
+            void (*format)(void *data,
+                           struct wl_shm *wl_shm,
+                           uint32_t format);
+    };
+
+Como se puede ver este escuchador sirve para que el servidor Wayland informe de cómo se colocan los bits del color dentro de cada pixel.
+
+Para crear el buffer con la memoria compartida y dibujar en él se usará la siguiente función:
+    ///////////////////////////////////////////////////////////
+    // Función para crear y dibujar en el buffer
+    
+    static struct wl_buffer *
+    crear_buffer(struct Datos *datos)
+    {
+        // Tamaño de la ventana que se va a dibujar
+        const int width = 640, height = 480;
+        // Bytes por pixel
+        int stride = width * 4;
+        // Total de bytes de la imagen
+        int size = stride * height;
+    
+        // Se adquiere el archivo que se usará para compartir la memoria
+        int fd = allocate_shm_file(size);
+        if (fd == -1) {
+            return NULL;
+        }
+    
+        // Se "mapea" para compartir
+        uint32_t *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (data == MAP_FAILED) {
+            close(fd);
+            return NULL;
+        }
+        // ¡Ya se tiene el array de pixeles para dibujar!
+        datos->pixels = data;
+    
+        // Se crea el pool para compartir la memoria con el servidor Wayland
+        struct wl_shm_pool *pool = wl_shm_create_pool(datos->shm, fd, size);
+        // Se crea el buffer a partir del pool
+        struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0,
+                width, height, stride, WL_SHM_FORMAT_XRGB8888);
+        wl_shm_pool_destroy(pool);
+        close(fd);
+    
+        // Se dibuja la imagen
+        datos->n++;
+        char par = (datos->n)%2;
+        uint32_t pixel1 = par ? 0xFF666666 : 0xFFEEEEEE;
+        uint32_t pixel2 = 0xFF666666;
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                if ((x + y / 8 * 8) % 16 < 8)
+                    datos->pixels[y * width + x] = pixel1;
+                else
+                    datos->pixels[y * width + x] = pixel2;
+            }
+        }
+    
+        munmap(data, size);
+    
+        // Se añade el listener a wl_buffer
+        datos->wl_buffer_listener.release = wl_buffer_listener_release;
+        wl_buffer_add_listener(buffer, &datos->wl_buffer_listener, datos);
+        return buffer;
+    }
+
+Como se puede ver se dibuja cambiando el color directamente a los pixeles.
+También se debe implementar el listener de wl_buffer, la estructura que lo define es:
+
+    struct wl_buffer_listener {
+    	/**
+    	 * compositor releases buffer
+    	 *
+    	 * Sent when this wl_buffer is no longer used by the compositor.
+    	 * The client is now free to reuse or destroy this buffer and its
+    	 * backing storage.
+    	 *
+    	 * If a client receives a release event before the frame callback
+    	 * requested in the same wl_surface.commit that attaches this
+    	 * wl_buffer to a surface, then the client is immediately free to
+    	 * reuse the buffer and its backing storage, and does not need a
+    	 * second buffer for the next surface content update. Typically
+    	 * this is possible, when the compositor maintains a copy of the
+    	 * wl_surface contents, e.g. as a GL texture. This is an important
+    	 * optimization for GL(ES) compositors with wl_shm clients.
+    	 */
+    	void (*release)(void *data,
+    			struct wl_buffer *wl_buffer);
+    };
+
+Se puede implementar con la siguiente función:
+
+    ///////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de wl_buffer_listener
+    
+    static void
+    wl_buffer_listener_release(void *data, struct wl_buffer *wl_buffer)
+    {
+        // Evento enviado por el compositor cuando el buffer no se necesita más
+        wl_buffer_destroy(wl_buffer);
+        printf("[wl_buffer_listener_release] Buffer destruido\n");
+    }
+
+Modificando el ejemplo del ejercicio anterior el ejemplo completo sería:
+
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <wayland-client.h>
+    
+    #include "wayland-xdg-shell-client-protocol.h"
+    
+    //////////////////////////////////////////////////////////
+    // Código para crear el descriptor de fichero en el que compartir la memoria
+    #include <errno.h>
+    #include <fcntl.h>
+    #include <sys/mman.h>
+    #include <unistd.h>
+    
+    static void
+    randname(char *buf)
+    {
+        int r = rand();
+    	for (int i = 0; i < 6; ++i) {
+    		buf[i] = 'A'+(r&15)+(r&16)*2;
+    		r >>= 5;
+    	}
+    }
+    
+    static int
+    create_shm_file(void)
+    {
+    	int retries = 100;
+    	do {
+    		char name[] = "/wl_shm-XXXXXX";
+    		randname(name + sizeof(name) - 7);
+    		--retries;
+    		int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    		if (fd >= 0) {
+    			shm_unlink(name);
+    			return fd;
+    		}
+    	} while (retries > 0 && errno == EEXIST);
+    	return -1;
+    }
+    
+    int
+    allocate_shm_file(size_t size)
+    {
+    	int fd = create_shm_file();
+    	if (fd < 0)
+    		return -1;
+    	int ret;
+    	do {
+    		ret = ftruncate(fd, size);
+    	} while (ret < 0 && errno == EINTR);
+    	if (ret < 0) {
+    		close(fd);
+    		return -1;
+    	}
+    	return fd;
+    }
+    
+    ////////////////////////////////////////////////////////////
+    // Estructura de datos para almacenar recursos
+    
+    struct Datos {
+        // Objetos para crear la memoria compartida
+        struct wl_shm *shm;
+        struct wl_shm_listener *shm_listener;
+        uint32_t shm_format;
+        uint8_t *pool_data;
+        struct wl_shm_pool *pool;
+        struct wl_buffer *buffer;
+    
+        // Objetos para crear la "surface"
+        struct wl_surface *surface;
+        struct wl_compositor *compositor;
+        uint32_t *pixels; // Pixels de la ventana
+        int n;
+    
+        // Objetos para crear la ventana
+        struct xdg_wm_base *xdg_wm_base;
+        struct xdg_wm_base_listener xdg_wm_base_listener;
+        struct xdg_surface *xdg_surface;
+        struct xdg_surface_listener xdg_surface_listener;
+        struct wl_buffer *wl_buffer;
+        struct wl_buffer_listener wl_buffer_listener;
+        struct xdg_toplevel *xdg_toplevel;
+    };
+    
+    ///////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de wl_buffer_listener
+    
+    static void
+    wl_buffer_listener_release(void *data, struct wl_buffer *wl_buffer)
+    {
+        // Evento enviado por el compositor cuando el buffer no se necesita más
+        wl_buffer_destroy(wl_buffer);
+        printf("[wl_buffer_listener_release] Buffer destruido\n");
+    }
+    
+    ///////////////////////////////////////////////////////////
+    // Función para crear y dibujar en el buffer
+    
+    static struct wl_buffer *
+    crear_buffer(struct Datos *datos)
+    {
+        // Tamaño de la ventana que se va a dibujar
+        const int width = 640, height = 480;
+        // Bytes por pixel
+        int stride = width * 4;
+        // Total de bytes de la imagen
+        int size = stride * height;
+    
+        // Se adquiere el archivo que se usará para compartir la memoria
+        int fd = allocate_shm_file(size);
+        if (fd == -1) {
+            return NULL;
+        }
+    
+        // Se "mapea" para compartir
+        uint32_t *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (data == MAP_FAILED) {
+            close(fd);
+            return NULL;
+        }
+        // ¡Ya se tiene el array de pixeles para dibujar!
+        datos->pixels = data;
+    
+        // Se crea el pool para compartir la memoria con el servidor Wayland
+        struct wl_shm_pool *pool = wl_shm_create_pool(datos->shm, fd, size);
+        // Se crea el buffer a partir del pool
+        struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0,
+                width, height, stride, WL_SHM_FORMAT_XRGB8888);
+        wl_shm_pool_destroy(pool);
+        close(fd);
+    
+        // Se dibuja la imagen
+        datos->n++;
+        char par = (datos->n)%2;
+        uint32_t pixel1 = par ? 0xFF666666 : 0xFFEEEEEE;
+        uint32_t pixel2 = 0xFF666666;
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                if ((x + y / 8 * 8) % 16 < 8)
+                    datos->pixels[y * width + x] = pixel1;
+                else
+                    datos->pixels[y * width + x] = pixel2;
+            }
+        }
+    
+        munmap(data, size);
+    
+        // Se añade el listener a wl_buffer
+        datos->wl_buffer_listener.release = wl_buffer_listener_release;
+        wl_buffer_add_listener(buffer, &datos->wl_buffer_listener, datos);
+        return buffer;
+    }
+    
+    //////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de xdg_surface_listener
+    
+    void
+    xdg_surface_listener_configure(void *data,
+    			  struct xdg_surface *xdg_surface,
+    			  uint32_t serial)
+    {
+        printf("[xdg_surface_listener_configure]\n");
+        struct Datos *datos = (struct Datos *)data;
+        xdg_surface_ack_configure(xdg_surface, serial);
+    
+        datos->wl_buffer = crear_buffer(datos);
+        wl_surface_attach(datos->surface, datos->wl_buffer, 0, 0);
+        wl_surface_damage(datos->surface, 0, 0, 640, 480);
+        wl_surface_commit(datos->surface);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    // Función para crear el wl_suface
+    
+    static void
+    crear_surface(struct Datos *datos)
+    {
+        if(datos->xdg_surface == NULL && datos->xdg_wm_base !=NULL && datos->surface != NULL) {
+            datos->xdg_surface = xdg_wm_base_get_xdg_surface(datos->xdg_wm_base, datos->surface);
+            printf("xdg_surface creada\n");
+            datos->xdg_surface_listener.configure = xdg_surface_listener_configure;
+            xdg_surface_add_listener(datos->xdg_surface, &datos->xdg_surface_listener, datos);
+            datos->xdg_toplevel = xdg_surface_get_toplevel(datos->xdg_surface);
+            xdg_toplevel_set_title(datos->xdg_toplevel, "Ejemplo");
+            wl_surface_commit(datos->surface);
+        }
+    }
+    
+    //////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de xdg_wm_base_listener
+    
+    static void
+    xdg_wm_base_listener_ping(void *data, struct xdg_wm_base *xdg_wm_base, uint32_t serial)
+    {
+        //struct Datos *datos = (struct Datos*)data;
+        // El cliente debe contestar al ping con un pong o se considerará que el cliente
+        // no responde a los eventos
+        xdg_wm_base_pong(xdg_wm_base, serial);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de shm_listener
+    
+    static void
+    shm_listener_format(void *data, struct wl_shm *wl_shm, uint32_t format)
+    {
+        struct Datos *datos = (struct Datos*)data;
+        datos->shm_format = format;
+    }
+    
+    
+    ////////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de registry_listener
+    
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        // Se obtiene la struct Datos
+        struct Datos *datos = (struct Datos*) data;
+    
+        printf("Interface %s id %d\n", interface, id);
+        
+        // Se busca el recurso
+        if(!strcmp(interface, "wl_shm")) {
+            // Se solicita el objeto wl_shm
+            datos->shm = wl_registry_bind(registry, id, &wl_shm_interface, version);
+            struct wl_shm_listener *shm_listener = (struct wl_shm_listener*) malloc(sizeof(struct wl_shm_listener));
+            shm_listener->format = shm_listener_format;
+            datos->shm_listener = shm_listener;
+        } else if(! strcmp(interface, "xdg_wm_base")) {
+            datos->xdg_wm_base = wl_registry_bind(registry, id, &xdg_wm_base_interface, version);
+            datos->xdg_wm_base_listener.ping = xdg_wm_base_listener_ping;
+            xdg_wm_base_add_listener(datos->xdg_wm_base, &datos->xdg_wm_base_listener, datos);
+            crear_surface(datos); 
+        } else if(! strcmp(interface, "wl_compositor")) {
+            datos->compositor = wl_registry_bind(registry, id, &wl_compositor_interface, version);
+            datos->surface = wl_compositor_create_surface(datos->compositor);
+            crear_surface(datos);
+        }
+    
+    }
+    
+    static void
+    registry_listener_remove(void *data, struct wl_registry *registry, uint32_t id)
+    {
+        printf("Se elimina el interface %d\n", id);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    
+    int main(int argc, char **argv)
+    {
+    
+        struct wl_display *display = wl_display_connect(NULL);
+        if (display == NULL) {
+            fprintf(stderr, "No se puede conectar al display\n");
+            exit(1);
+        }
+        printf("Conectado al display\n");
+    
+        // Se crea la estructura para almacenar los protocolos
+        struct Datos datos;
+        datos.shm = NULL;
+        datos.xdg_surface = NULL;
+        datos.xdg_wm_base = NULL;
+        datos.surface = NULL;
+        datos.wl_buffer = NULL;
+        datos.n = 0;
+    
+        // Se crea el eschador de wl_registry
+        struct wl_registry_listener registry_listener;
+        registry_listener.global = registry_listener_global;
+        registry_listener.global_remove = registry_listener_remove;
+    
+        // Se obtiene el objeto wl_registry 
+        struct wl_registry *registry = wl_display_get_registry(display);
+        // Se le añade el escuchador recién creado
+        wl_registry_add_listener(registry, &registry_listener, &datos);
+    
+        // Se solicita que se envíen las peticiones desde el cliente al servidor
+        wl_display_dispatch(display);
+        // Se bloquea hasta que se procesen los eventos
+        wl_display_roundtrip(display);
+    
+    
+        while (wl_display_dispatch(display)) {
+            // Bucle de eventos
+        }
+        
+        wl_display_disconnect(display);
+        printf("Desconectado del display\n");
+        
+        return 0;
+    }
+
+Se puede ver que se ha modificado el bucle de eventos para que el programa no acabe y se pueda mostrar la ventana. Como se puede ver se muestra una ventana que muestra un patrón de "tablero de ajedrez" o bien una imagen gris, según se la manipule. No tiene botones para maximizar, minimizar,... pues Wayland delega esta tarea a los clientes. En X11 es el servidor de ventanas el que realiza esta tarea. Existen protocolos en Wayland para que sea el servidor Wayland el que realice dicha tarea, pero no tiene porqué estar implementados en el servidor que se esté ejecutando el cliente. También se puede ver que la ventana no se puede mover, ni redimensionar,... esto se debe a que todavía no se han implementado dichos eventos.
+
+Todavía no se responden a los eventos de ratón y teclado.
+
+La forma de dibujar la ventana tampoco es la correcta, lo más habitual es solicitar un "frame" e indicar que el frame ha cambiado al servidor. Son unas leves modificaciones que se verán en los siguientes capítulos.
+
+Ahora sí se ha modificado el eschuchador de xdg_surface para que se cree el wl_buffer cada vez que hay cambios y se vuelva a dibujar:
+
+
+    //////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de xdg_surface_listener
+    
+    void
+    xdg_surface_listener_configure(void *data,
+    			  struct xdg_surface *xdg_surface,
+    			  uint32_t serial)
+    {
+        printf("[xdg_surface_listener_configure]\n");
+        struct Datos *datos = (struct Datos *)data;
+        xdg_surface_ack_configure(xdg_surface, serial);
+    
+        datos->wl_buffer = crear_buffer(datos);
+        wl_surface_attach(datos->surface, datos->wl_buffer, 0, 0);
+        wl_surface_damage(datos->surface, 0, 0, 640, 480);
+        wl_surface_commit(datos->surface);
+    }
+
+En las líneas:
+        datos->wl_buffer = crear_buffer(datos);
+        wl_surface_attach(datos->surface, datos->wl_buffer, 0, 0);
+        wl_surface_damage(datos->surface, 0, 0, 640, 480);
+        wl_surface_commit(datos->surface);
+
+Se puede ver que se crea el buffer, se añade el buffer al wl_surface, con wl_surface_attach. También se marca el área como dañada con wl_surface_damage. Como ya se ha dicho esto se hace para indicar al servidor Wayland qué parte de la imagen debe de dibujar, ya que, muchas veces, no es necesario redibujar toda la imagen.
+Finalmente, se indica que la wl_surface está lista para ser dibujada.
