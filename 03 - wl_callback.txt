@@ -1,0 +1,379 @@
+wl_callback
+===========
+
+En el capítulo anterior se dibujaba una ventana y se indicaba que procedimientos mejores que el usado para dibujar. Se puede hacer que el dibujado se realice mediante un mecanismo orientado a eventos.
+
+Con wl_callback se puede solicitar que el servidor Wayland genere un evento cuando esté listo para dibujar. Se responde a este evento con el nuevo fotograma que se deba dibujar en pantalla. Así se tiene una interfaz que permite dibujar vídeo y otras secuencias animadas sin que se produzcan artefactos en la imagen.
+
+Para obtener un objeto wl_callback para un determinado wl_surface, se ejecuta la función:
+    struct wl_callback *wl_surface_frame(struct wl_surface *wl_surface); 
+
+Una vez creado el surface se le añade el escuchador correspondiente usando la función:
+
+    wl_callback_listener(struct wl_callback *wl_callback, struct wl_callback_listener *listener, void* data);
+
+La estructura que define el escuchador es:
+
+    struct wl_callback_listener {
+    	/**
+    	 * done event
+    	 *
+    	 * Notify the client when the related request is done.
+    	 * @param callback_data request-specific data for the callback
+    	 */
+    	void (*done)(void *data,
+    		     struct wl_callback *wl_callback,
+    		     uint32_t callback_data);
+    };
+
+La función que implementará el evento "done" del escuchador wl_callback_listener puede tener la forma:
+
+    void
+    wl_callback_listener_done(void *data, struct wl_callback *cb, uint32_t time)
+    {
+        struct Datos *datos = (struct Datos*) data;
+        // wl_callback se debe destruir y volver a crear en cada llamada
+        wl_callback_destroy(cb);
+        datos->wl_callback = wl_surface_frame(datos->surface);
+        wl_callback_add_listener(datos->wl_callback, &datos->wl_callback_listener, datos);
+    
+        // Se vuelve a dibujar el buffer
+        struct wl_buffer *buffer = crear_buffer(datos);
+    	wl_surface_attach(datos->surface, buffer, 0, 0);
+    	wl_surface_damage_buffer(datos->surface, 0, 0, INT32_MAX, INT32_MAX);
+    	wl_surface_commit(datos->surface);
+    }
+
+Esta función se puede usar en el caso de que se deseé mostrar una secuencia continua de fotogramas, como se puede ver el objeto wl_callback se debe destruir y crear cada vez que se quiera solicitar el envío de un nuevo fotograma al servidor.
+
+En el código también se puede ver que se vuelve a crear un buffer que se añade al wl_surface, se marca el wl_surface como dañado y, finalmente, un wl_surface_commit para indicar que la imagen está lista.
+
+El siguiente ejemplo es una modificación del ejemplo del capítulo anterior en el que se usa wl_callback para realizar el proceso de dibujo:
+
+    // gcc -o %e %s -lwayland-client   
+    
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <wayland-client.h>
+    
+    #include "wayland-xdg-shell-client-protocol.h"
+    
+    //////////////////////////////////////////////////////////
+    // Código para crear el descriptor de fichero en el que compartir la memoria
+    #include <errno.h>
+    #include <fcntl.h>
+    #include <sys/mman.h>
+    #include <unistd.h>
+    
+    static void
+    randname(char *buf)
+    {
+        int r = rand();
+    	for (int i = 0; i < 6; ++i) {
+    		buf[i] = 'A'+(r&15)+(r&16)*2;
+    		r >>= 5;
+    	}
+    }
+    
+    static int
+    create_shm_file(void)
+    {
+    	int retries = 100;
+    	do {
+    		char name[] = "/wl_shm-XXXXXX";
+    		randname(name + sizeof(name) - 7);
+    		--retries;
+    		int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    		if (fd >= 0) {
+    			shm_unlink(name);
+    			return fd;
+    		}
+    	} while (retries > 0 && errno == EEXIST);
+    	return -1;
+    }
+    
+    int
+    allocate_shm_file(size_t size)
+    {
+    	int fd = create_shm_file();
+    	if (fd < 0)
+    		return -1;
+    	int ret;
+    	do {
+    		ret = ftruncate(fd, size);
+    	} while (ret < 0 && errno == EINTR);
+    	if (ret < 0) {
+    		close(fd);
+    		return -1;
+    	}
+    	return fd;
+    }
+    
+    ////////////////////////////////////////////////////////////
+    // Estructura de datos para almacenar recursos
+    
+    struct Datos {
+        // Objetos para crear la memoria compartida
+        struct wl_shm *shm;
+        struct wl_shm_listener *shm_listener;
+        uint32_t shm_format;
+        uint8_t *pool_data;
+        struct wl_shm_pool *pool;
+        struct wl_buffer *buffer;
+    
+        // Objetos para crear la "surface"
+        struct wl_surface *surface;
+        struct wl_compositor *compositor;
+        uint32_t *pixels; // Pixels de la ventana
+        int n;
+    
+        // Objetos para crear la ventana
+        struct xdg_wm_base *xdg_wm_base;
+        struct xdg_wm_base_listener xdg_wm_base_listener;
+        struct xdg_surface *xdg_surface;
+        struct xdg_surface_listener xdg_surface_listener;
+        struct wl_buffer *wl_buffer;
+        struct wl_buffer_listener wl_buffer_listener;
+        struct xdg_toplevel *xdg_toplevel;
+    
+        //  Objeto para dibujar cuando el servidor esté listo
+        struct wl_callback *wl_callback;
+        struct wl_callback_listener wl_callback_listener;
+    };
+    
+    ///////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de wl_buffer_listener
+    
+    static void
+    wl_buffer_listener_release(void *data, struct wl_buffer *wl_buffer)
+    {
+        // Evento enviado por el compositor cuando el buffer no se necesita más
+        wl_buffer_destroy(wl_buffer);
+        printf("[wl_buffer_listener_release] Buffer destruido\n");
+    }
+    
+    ///////////////////////////////////////////////////////////
+    // Función para crear y dibujar en el buffer
+    
+    static struct wl_buffer *
+    crear_buffer(struct Datos *datos)
+    {
+        // Tamaño de la ventana que se va a dibujar
+        const int width = 640, height = 480;
+        // Bytes por pixel
+        int stride = width * 4;
+        // Total de bytes de la imagen
+        int size = stride * height;
+    
+        // Se adquiere el archivo que se usará para compartir la memoria
+        int fd = allocate_shm_file(size);
+        if (fd == -1) {
+            return NULL;
+        }
+    
+        // Se "mapea" para compartir
+        uint32_t *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (data == MAP_FAILED) {
+            close(fd);
+            return NULL;
+        }
+        // ¡Ya se tiene el array de pixeles para dibujar!
+        datos->pixels = data;
+    
+        // Se crea el pool para compartir la memoria con el servidor Wayland
+        struct wl_shm_pool *pool = wl_shm_create_pool(datos->shm, fd, size);
+        // Se crea el buffer a partir del pool
+        struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0,
+                width, height, stride, WL_SHM_FORMAT_XRGB8888);
+        wl_shm_pool_destroy(pool);
+        close(fd);
+    
+        // Se dibuja la imagen
+        datos->n++;
+        char par = (datos->n)%2;
+        uint32_t pixel1 = par ? 0xFF666666 : 0xFFEEEEEE;
+        uint32_t pixel2 = 0xFF666666;
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                if ((x + y / 8 * 8) % 16 < 8)
+                    datos->pixels[y * width + x] = pixel1;
+                else
+                    datos->pixels[y * width + x] = pixel2;
+            }
+        }
+    
+        munmap(data, size);
+    
+        // Se añade el listener a wl_buffer
+        datos->wl_buffer_listener.release = wl_buffer_listener_release;
+        wl_buffer_add_listener(buffer, &datos->wl_buffer_listener, datos);
+        return buffer;
+    }
+    
+    //////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de xdg_surface_listener
+    
+    void
+    xdg_surface_listener_configure(void *data,
+    			  struct xdg_surface *xdg_surface,
+    			  uint32_t serial)
+    {
+        printf("[xdg_surface_listener_configure]\n");
+        struct Datos *datos = (struct Datos *)data;
+        xdg_surface_ack_configure(xdg_surface, serial);
+    
+        datos->wl_buffer = crear_buffer(datos);
+        wl_surface_attach(datos->surface, datos->wl_buffer, 0, 0);
+        wl_surface_damage(datos->surface, 0, 0, 640, 480);
+        wl_surface_commit(datos->surface);
+    }
+    
+    
+    ///////////////////////////////////////////////////////////
+    // Métodos para capturar los eventos de wl_callback_listener
+    
+    void
+    wl_callback_listener_done(void *data, struct wl_callback *cb, uint32_t time)
+    {
+        struct Datos *datos = (struct Datos*) data;
+        // wl_callback se debe destruir y volver a crear en cada llamada
+        wl_callback_destroy(cb);
+        datos->wl_callback = wl_surface_frame(datos->surface);
+        wl_callback_add_listener(datos->wl_callback, &datos->wl_callback_listener, datos);
+    
+        // Se vuelve a dibujar el buffer
+        struct wl_buffer *buffer = crear_buffer(datos);
+    	wl_surface_attach(datos->surface, buffer, 0, 0);
+    	wl_surface_damage_buffer(datos->surface, 0, 0, INT32_MAX, INT32_MAX);
+    	wl_surface_commit(datos->surface);
+    }
+    
+    
+    ///////////////////////////////////////////////////////////
+    // Función para crear el wl_suface
+    
+    static void
+    crear_surface(struct Datos *datos)
+    {
+        if(datos->xdg_surface == NULL && datos->xdg_wm_base !=NULL && datos->surface != NULL) {
+            datos->xdg_surface = xdg_wm_base_get_xdg_surface(datos->xdg_wm_base, datos->surface);
+            printf("xdg_surface creada\n");
+            datos->xdg_surface_listener.configure = xdg_surface_listener_configure;
+            xdg_surface_add_listener(datos->xdg_surface, &datos->xdg_surface_listener, datos);
+            datos->xdg_toplevel = xdg_surface_get_toplevel(datos->xdg_surface);
+            xdg_toplevel_set_title(datos->xdg_toplevel, "Ejemplo");
+            wl_surface_commit(datos->surface);
+        }
+    }
+    
+    //////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de xdg_wm_base_listener
+    
+    static void
+    xdg_wm_base_listener_ping(void *data, struct xdg_wm_base *xdg_wm_base, uint32_t serial)
+    {
+        //struct Datos *datos = (struct Datos*)data;
+        // El cliente debe contestar al ping con un pong o se considerará que el cliente
+        // no responde a los eventos
+        xdg_wm_base_pong(xdg_wm_base, serial);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de shm_listener
+    
+    static void
+    shm_listener_format(void *data, struct wl_shm *wl_shm, uint32_t format)
+    {
+        struct Datos *datos = (struct Datos*)data;
+        datos->shm_format = format;
+    }
+    
+    
+    ////////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de registry_listener
+    
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        // Se obtiene la struct Datos
+        struct Datos *datos = (struct Datos*) data;
+    
+        printf("Interface %s id %d\n", interface, id);
+        
+        // Se busca el recurso
+        if(!strcmp(interface, "wl_shm")) {
+            // Se solicita el objeto wl_shm
+            datos->shm = wl_registry_bind(registry, id, &wl_shm_interface, version);
+            struct wl_shm_listener *shm_listener = (struct wl_shm_listener*) malloc(sizeof(struct wl_shm_listener));
+            shm_listener->format = shm_listener_format;
+            datos->shm_listener = shm_listener;
+        } else if(! strcmp(interface, "xdg_wm_base")) {
+            datos->xdg_wm_base = wl_registry_bind(registry, id, &xdg_wm_base_interface, version);
+            datos->xdg_wm_base_listener.ping = xdg_wm_base_listener_ping;
+            xdg_wm_base_add_listener(datos->xdg_wm_base, &datos->xdg_wm_base_listener, datos);
+            crear_surface(datos); 
+        } else if(! strcmp(interface, "wl_compositor")) {
+            datos->compositor = wl_registry_bind(registry, id, &wl_compositor_interface, version);
+            datos->surface = wl_compositor_create_surface(datos->compositor);
+            datos->wl_callback = wl_surface_frame(datos->surface);
+            wl_callback_add_listener(datos->wl_callback, &datos->wl_callback_listener, datos);
+            crear_surface(datos);
+        }
+    
+    }
+    
+    static void
+    registry_listener_remove(void *data, struct wl_registry *registry, uint32_t id)
+    {
+        printf("Se elimina el interface %d\n", id);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    
+    int main(int argc, char **argv)
+    {
+    
+        struct wl_display *display = wl_display_connect(NULL);
+        if (display == NULL) {
+            fprintf(stderr, "No se puede conectar al display\n");
+            exit(1);
+        }
+        printf("Conectado al display\n");
+    
+        // Se crea la estructura para almacenar los protocolos
+        struct Datos datos;
+        datos.shm = NULL;
+        datos.xdg_surface = NULL;
+        datos.xdg_wm_base = NULL;
+        datos.surface = NULL;
+        datos.wl_buffer = NULL;
+        datos.n = 0;
+        datos.wl_callback_listener.done = wl_callback_listener_done;
+    
+        // Se crea el eschador de wl_registry
+        struct wl_registry_listener registry_listener;
+        registry_listener.global = registry_listener_global;
+        registry_listener.global_remove = registry_listener_remove;
+    
+        // Se obtiene el objeto wl_registry 
+        struct wl_registry *registry = wl_display_get_registry(display);
+        // Se le añade el escuchador recién creado
+        wl_registry_add_listener(registry, &registry_listener, &datos);
+    
+        // Se solicita que se envíen las peticiones desde el cliente al servidor
+        wl_display_dispatch(display);
+        // Se bloquea hasta que se procesen los eventos
+        wl_display_roundtrip(display);
+    
+    
+        while (wl_display_dispatch(display)) {
+            // Bucle de eventos
+        }
+        
+        wl_display_disconnect(display);
+        printf("Desconectado del display\n");
+        
+        return 0;
+    }
