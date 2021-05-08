@@ -1,0 +1,1335 @@
+Capturando eventos del ratón con wl_pointer
+===========================================
+
+Se va a seguir modificando nuestro ejemplo para capturar los eventos del ratón.
+Para poder capturar dichos eventos, se tendrá que hacer uso de la interfaz wl_seat. Como ya se comentó en otro capítulo, un wl_seat representa un puesto de trabajo, que va a constar de su teclado, ratón u otros dispositivos de entrada. En principio se podrían tener varios ratones y teclados conectados a un mismo ordenador, se podría asociar cada par teclado-ratón a un puesto de trabajo (seat) y hacer que varias personas trabajaran en el mismo ordenador de forma que cada persona seleccionase una ventana diferente y pudiese introducir datos en dicha ventana usando el par teclado-ratón de su puesto. Esto recibe el nombre de multiseat o multipoint (en la terminología de Microsoft). Se recomienda ver el artículo siguiente sobre este tema:
+
+https://es.m.wikipedia.org/wiki/Multiseat
+
+Lo primero que se debe hacer es capturar el interfaz wl_seat por el mecanismo habitual. Una vez capturado, se obtendrá el objeto wl_pointer asociado usando:
+
+    wl_pointer* wl_seat_get_pointer(wl_seat *wl_seat);
+
+Es decir:
+
+
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        // Se obtiene la struct Datos
+        struct Datos *datos = (struct Datos*) data;
+    
+        ...
+    
+        if(! strcmp(interface, "wl_seat")) {
+            datos->wl_seat = wl_registry_bind(registry, id, &wl_seat_interface, version);
+            datos->wl_pointer = wl_seat_get_pointer(datos->wl_seat);
+            wl_pointer_add_listener(datos->wl_pointer, &datos->wl_pointer_listener, datos);
+        }
+    
+        ...
+    }
+
+Como se puede ver, también se añade un escuchador de los eventos generados por el objeto wl_pointer:
+
+    wl_pointer_add_listener(datos->wl_pointer, &datos->wl_pointer_listener, datos);
+
+La estructura wl_pointer_listener implementa al escuchador de los eventos del ratón como pueden ser "enter" (entra el ratón en la ventana), "leave" (sale el ratón de la ventana). Esta estructura tiene los siguientes miembros:
+
+
+    struct wl_pointer_listener {
+    	/**
+    	 * enter event
+    	 *
+    	 * Notification that this seat's pointer is focused on a certain
+    	 * surface.
+    	 *
+    	 * When a seat's focus enters a surface, the pointer image is
+    	 * undefined and a client should respond to this event by setting
+    	 * an appropriate pointer image with the set_cursor request.
+    	 * @param serial serial number of the enter event
+    	 * @param surface surface entered by the pointer
+    	 * @param surface_x surface-local x coordinate
+    	 * @param surface_y surface-local y coordinate
+    	 */
+    	void (*enter)(void *data,
+    		      struct wl_pointer *wl_pointer,
+    		      uint32_t serial,
+    		      struct wl_surface *surface,
+    		      wl_fixed_t surface_x,
+    		      wl_fixed_t surface_y);
+    	/**
+    	 * leave event
+    	 *
+    	 * Notification that this seat's pointer is no longer focused on
+    	 * a certain surface.
+    	 *
+    	 * The leave notification is sent before the enter notification for
+    	 * the new focus.
+    	 * @param serial serial number of the leave event
+    	 * @param surface surface left by the pointer
+    	 */
+    	void (*leave)(void *data,
+    		      struct wl_pointer *wl_pointer,
+    		      uint32_t serial,
+    		      struct wl_surface *surface);
+    	/**
+    	 * pointer motion event
+    	 *
+    	 * Notification of pointer location change. The arguments
+    	 * surface_x and surface_y are the location relative to the focused
+    	 * surface.
+    	 * @param time timestamp with millisecond granularity
+    	 * @param surface_x surface-local x coordinate
+    	 * @param surface_y surface-local y coordinate
+    	 */
+    	void (*motion)(void *data,
+    		       struct wl_pointer *wl_pointer,
+    		       uint32_t time,
+    		       wl_fixed_t surface_x,
+    		       wl_fixed_t surface_y);
+    	/**
+    	 * pointer button event
+    	 *
+    	 * Mouse button click and release notifications.
+    	 *
+    	 * The location of the click is given by the last motion or enter
+    	 * event. The time argument is a timestamp with millisecond
+    	 * granularity, with an undefined base.
+    	 *
+    	 * The button is a button code as defined in the Linux kernel's
+    	 * linux/input-event-codes.h header file, e.g. BTN_LEFT.
+    	 *
+    	 * Any 16-bit button code value is reserved for future additions to
+    	 * the kernel's event code list. All other button codes above
+    	 * 0xFFFF are currently undefined but may be used in future
+    	 * versions of this protocol.
+    	 * @param serial serial number of the button event
+    	 * @param time timestamp with millisecond granularity
+    	 * @param button button that produced the event
+    	 * @param state physical state of the button
+    	 */
+    	void (*button)(void *data,
+    		       struct wl_pointer *wl_pointer,
+    		       uint32_t serial,
+    		       uint32_t time,
+    		       uint32_t button,
+    		       uint32_t state);
+    	/**
+    	 * axis event
+    	 *
+    	 * Scroll and other axis notifications.
+    	 *
+    	 * For scroll events (vertical and horizontal scroll axes), the
+    	 * value parameter is the length of a vector along the specified
+    	 * axis in a coordinate space identical to those of motion events,
+    	 * representing a relative movement along the specified axis.
+    	 *
+    	 * For devices that support movements non-parallel to axes multiple
+    	 * axis events will be emitted.
+    	 *
+    	 * When applicable, for example for touch pads, the server can
+    	 * choose to emit scroll events where the motion vector is
+    	 * equivalent to a motion event vector.
+    	 *
+    	 * When applicable, a client can transform its content relative to
+    	 * the scroll distance.
+    	 * @param time timestamp with millisecond granularity
+    	 * @param axis axis type
+    	 * @param value length of vector in surface-local coordinate space
+    	 */
+    	void (*axis)(void *data,
+    		     struct wl_pointer *wl_pointer,
+    		     uint32_t time,
+    		     uint32_t axis,
+    		     wl_fixed_t value);
+    	/**
+    	 * end of a pointer event sequence
+    	 *
+    	 * Indicates the end of a set of events that logically belong
+    	 * together. A client is expected to accumulate the data in all
+    	 * events within the frame before proceeding.
+    	 *
+    	 * All wl_pointer events before a wl_pointer.frame event belong
+    	 * logically together. For example, in a diagonal scroll motion the
+    	 * compositor will send an optional wl_pointer.axis_source event,
+    	 * two wl_pointer.axis events (horizontal and vertical) and finally
+    	 * a wl_pointer.frame event. The client may use this information to
+    	 * calculate a diagonal vector for scrolling.
+    	 *
+    	 * When multiple wl_pointer.axis events occur within the same
+    	 * frame, the motion vector is the combined motion of all events.
+    	 * When a wl_pointer.axis and a wl_pointer.axis_stop event occur
+    	 * within the same frame, this indicates that axis movement in one
+    	 * axis has stopped but continues in the other axis. When multiple
+    	 * wl_pointer.axis_stop events occur within the same frame, this
+    	 * indicates that these axes stopped in the same instance.
+    	 *
+    	 * A wl_pointer.frame event is sent for every logical event group,
+    	 * even if the group only contains a single wl_pointer event.
+    	 * Specifically, a client may get a sequence: motion, frame,
+    	 * button, frame, axis, frame, axis_stop, frame.
+    	 *
+    	 * The wl_pointer.enter and wl_pointer.leave events are logical
+    	 * events generated by the compositor and not the hardware. These
+    	 * events are also grouped by a wl_pointer.frame. When a pointer
+    	 * moves from one surface to another, a compositor should group the
+    	 * wl_pointer.leave event within the same wl_pointer.frame.
+    	 * However, a client must not rely on wl_pointer.leave and
+    	 * wl_pointer.enter being in the same wl_pointer.frame.
+    	 * Compositor-specific policies may require the wl_pointer.leave
+    	 * and wl_pointer.enter event being split across multiple
+    	 * wl_pointer.frame groups.
+    	 * @since 5
+    	 */
+    	void (*frame)(void *data,
+    		      struct wl_pointer *wl_pointer);
+    	/**
+    	 * axis source event
+    	 *
+    	 * Source information for scroll and other axes.
+    	 *
+    	 * This event does not occur on its own. It is sent before a
+    	 * wl_pointer.frame event and carries the source information for
+    	 * all events within that frame.
+    	 *
+    	 * The source specifies how this event was generated. If the source
+    	 * is wl_pointer.axis_source.finger, a wl_pointer.axis_stop event
+    	 * will be sent when the user lifts the finger off the device.
+    	 *
+    	 * If the source is wl_pointer.axis_source.wheel,
+    	 * wl_pointer.axis_source.wheel_tilt or
+    	 * wl_pointer.axis_source.continuous, a wl_pointer.axis_stop event
+    	 * may or may not be sent. Whether a compositor sends an axis_stop
+    	 * event for these sources is hardware-specific and
+    	 * implementation-dependent; clients must not rely on receiving an
+    	 * axis_stop event for these scroll sources and should treat scroll
+    	 * sequences from these scroll sources as unterminated by default.
+    	 *
+    	 * This event is optional. If the source is unknown for a
+    	 * particular axis event sequence, no event is sent. Only one
+    	 * wl_pointer.axis_source event is permitted per frame.
+    	 *
+    	 * The order of wl_pointer.axis_discrete and wl_pointer.axis_source
+    	 * is not guaranteed.
+    	 * @param axis_source source of the axis event
+    	 * @since 5
+    	 */
+    	void (*axis_source)(void *data,
+    			    struct wl_pointer *wl_pointer,
+    			    uint32_t axis_source);
+    	/**
+    	 * axis stop event
+    	 *
+    	 * Stop notification for scroll and other axes.
+    	 *
+    	 * For some wl_pointer.axis_source types, a wl_pointer.axis_stop
+    	 * event is sent to notify a client that the axis sequence has
+    	 * terminated. This enables the client to implement kinetic
+    	 * scrolling. See the wl_pointer.axis_source documentation for
+    	 * information on when this event may be generated.
+    	 *
+    	 * Any wl_pointer.axis events with the same axis_source after this
+    	 * event should be considered as the start of a new axis motion.
+    	 *
+    	 * The timestamp is to be interpreted identical to the timestamp in
+    	 * the wl_pointer.axis event. The timestamp value may be the same
+    	 * as a preceding wl_pointer.axis event.
+    	 * @param time timestamp with millisecond granularity
+    	 * @param axis the axis stopped with this event
+    	 * @since 5
+    	 */
+    	void (*axis_stop)(void *data,
+    			  struct wl_pointer *wl_pointer,
+    			  uint32_t time,
+    			  uint32_t axis);
+    	/**
+    	 * axis click event
+    	 *
+    	 * Discrete step information for scroll and other axes.
+    	 *
+    	 * This event carries the axis value of the wl_pointer.axis event
+    	 * in discrete steps (e.g. mouse wheel clicks).
+    	 *
+    	 * This event does not occur on its own, it is coupled with a
+    	 * wl_pointer.axis event that represents this axis value on a
+    	 * continuous scale. The protocol guarantees that each
+    	 * axis_discrete event is always followed by exactly one axis event
+    	 * with the same axis number within the same wl_pointer.frame. Note
+    	 * that the protocol allows for other events to occur between the
+    	 * axis_discrete and its coupled axis event, including other
+    	 * axis_discrete or axis events.
+    	 *
+    	 * This event is optional; continuous scrolling devices like
+    	 * two-finger scrolling on touchpads do not have discrete steps and
+    	 * do not generate this event.
+    	 *
+    	 * The discrete value carries the directional information. e.g. a
+    	 * value of -2 is two steps towards the negative direction of this
+    	 * axis.
+    	 *
+    	 * The axis number is identical to the axis number in the
+    	 * associated axis event.
+    	 *
+    	 * The order of wl_pointer.axis_discrete and wl_pointer.axis_source
+    	 * is not guaranteed.
+    	 * @param axis axis type
+    	 * @param discrete number of steps
+    	 * @since 5
+    	 */
+    	void (*axis_discrete)(void *data,
+    			      struct wl_pointer *wl_pointer,
+    			      uint32_t axis,
+    			      int32_t discrete);
+    };
+
+En el siguiente ejemplo se implementan todos y cada unos de dichos eventos de manera informativa:
+
+    // gcc -o %e %s -lwayland-client   
+    
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <wayland-client.h>
+    
+    #include "wayland-xdg-shell-client-protocol.h"
+    
+    //////////////////////////////////////////////////////////
+    // Código para crear el descriptor de fichero en el que compartir la memoria
+    #include <errno.h>
+    #include <fcntl.h>
+    #include <sys/mman.h>
+    #include <unistd.h>
+    
+    static void
+    randname(char *buf)
+    {
+        int r = rand();
+    	for (int i = 0; i < 6; ++i) {
+    		buf[i] = 'A'+(r&15)+(r&16)*2;
+    		r >>= 5;
+    	}
+    }
+    
+    static int
+    create_shm_file(void)
+    {
+    	int retries = 100;
+    	do {
+    		char name[] = "/wl_shm-XXXXXX";
+    		randname(name + sizeof(name) - 7);
+    		--retries;
+    		int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    		if (fd >= 0) {
+    			shm_unlink(name);
+    			return fd;
+    		}
+    	} while (retries > 0 && errno == EEXIST);
+    	return -1;
+    }
+    
+    int
+    allocate_shm_file(size_t size)
+    {
+    	int fd = create_shm_file();
+    	if (fd < 0)
+    		return -1;
+    	int ret;
+    	do {
+    		ret = ftruncate(fd, size);
+    	} while (ret < 0 && errno == EINTR);
+    	if (ret < 0) {
+    		close(fd);
+    		return -1;
+    	}
+    	return fd;
+    }
+    
+    ////////////////////////////////////////////////////////////
+    // Estructura de datos para almacenar recursos
+    
+    struct Datos {
+        // Objetos para crear la memoria compartida
+        struct wl_shm *shm;
+        struct wl_shm_listener *shm_listener;
+        uint32_t shm_format;
+        uint8_t *pool_data;
+        struct wl_shm_pool *pool;
+        struct wl_buffer *buffer;
+    
+        // Objetos para crear la "surface"
+        struct wl_surface *surface;
+        struct wl_compositor *compositor;
+        uint32_t *pixels; // Pixels de la ventana
+        int n;
+    
+        // Objetos para crear la ventana
+        struct xdg_wm_base *xdg_wm_base;
+        struct xdg_wm_base_listener xdg_wm_base_listener;
+        struct xdg_surface *xdg_surface;
+        struct xdg_surface_listener xdg_surface_listener;
+        struct wl_buffer *wl_buffer;
+        struct wl_buffer_listener wl_buffer_listener;
+        struct xdg_toplevel *xdg_toplevel;
+    
+        //Objetos para capturar el ratón
+        struct wl_seat *wl_seat;
+        struct wl_pointer *wl_pointer;
+        struct wl_pointer_listener wl_pointer_listener;
+    };
+    
+    ///////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de wl_pointer_listener
+    
+    
+    void wl_pointer_listener_enter(void *data,
+        struct wl_pointer *wl_pointer,
+        uint32_t serial,
+        struct wl_surface *surface,
+        wl_fixed_t surface_x,
+        wl_fixed_t surface_y)
+    {
+        printf("[wl_pointer_listener_enter] %d, %d\n", surface_x, surface_y);
+    }
+    
+    
+    void wl_pointer_listener_leave(void *data,
+        struct wl_pointer *wl_pointer,
+        uint32_t serial,
+        struct wl_surface *surface)
+    {
+        printf("[wl_pointer_listener_leave]\n");
+    }
+    
+    void wl_pointer_listener_motion(void *data,
+        struct wl_pointer *wl_pointer,
+        uint32_t time,
+        wl_fixed_t surface_x,
+        wl_fixed_t surface_y)
+    {
+        printf("[wl_pointer_listener_motion] %d, %d\n", surface_x, surface_y);
+    }
+    
+    
+    void wl_pointer_listener_button(void *data,
+        struct wl_pointer *wl_pointer,
+        uint32_t serial,
+        uint32_t time,
+        uint32_t button,
+        uint32_t state)
+    {
+        printf("[wl_pointer_listener_button] button %d state %d\n", button, state);
+    }
+    
+    
+    void wl_pointer_listener_axis(void *data,
+        struct wl_pointer *wl_pointer,
+        uint32_t time,
+        uint32_t axis,
+        wl_fixed_t value)
+    {
+        printf("[wl_pointer_listener_axis] axis %d value %d\n", axis, value);
+    }
+    
+    void wl_pointer_listener_frame(void *data,
+        struct wl_pointer *wl_pointer)
+    {
+        printf("[wl_pointer_listener_frame]\n");
+    }
+    
+    
+    void wl_pointer_listener_axis_source(void *data,
+        struct wl_pointer *wl_pointer,
+        uint32_t axis_source)
+    {
+        printf("[wl_pointer_listener_axis_source]\n");
+    }
+    
+    
+    void wl_pointer_listener_axis_stop(void *data,
+        struct wl_pointer *wl_pointer,
+        uint32_t time,
+        uint32_t axis)
+    {
+        printf("[wl_pointer_listener_axis_stop]\n");
+    }
+    
+    void wl_pointer_listener_axis_discrete(void *data,
+                                  struct wl_pointer *wl_pointer,
+                                  uint32_t axis,
+                                  int32_t discrete)
+    {
+        printf("[wl_pointer_listener_axis_discrete]\n");
+    }
+    ///////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de wl_buffer_listener
+    
+    static void
+    wl_buffer_listener_release(void *data, struct wl_buffer *wl_buffer)
+    {
+        // Evento enviado por el compositor cuando el buffer no se necesita más
+        wl_buffer_destroy(wl_buffer);
+        printf("[wl_buffer_listener_release] Buffer destruido\n");
+    }
+    
+    ///////////////////////////////////////////////////////////
+    // Función para crear y dibujar en el buffer
+    
+    static struct wl_buffer *
+    crear_buffer(struct Datos *datos)
+    {
+        // Tamaño de la ventana que se va a dibujar
+        const int width = 640, height = 480;
+        // Bytes por pixel
+        int stride = width * 4;
+        // Total de bytes de la imagen
+        int size = stride * height;
+    
+        // Se adquiere el archivo que se usará para compartir la memoria
+        int fd = allocate_shm_file(size);
+        if (fd == -1) {
+            return NULL;
+        }
+    
+        // Se "mapea" para compartir
+        uint32_t *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (data == MAP_FAILED) {
+            close(fd);
+            return NULL;
+        }
+        // ¡Ya se tiene el array de pixeles para dibujar!
+        datos->pixels = data;
+    
+        // Se crea el pool para compartir la memoria con el servidor Wayland
+        struct wl_shm_pool *pool = wl_shm_create_pool(datos->shm, fd, size);
+        // Se crea el buffer a partir del pool
+        struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0,
+                width, height, stride, WL_SHM_FORMAT_XRGB8888);
+        wl_shm_pool_destroy(pool);
+        close(fd);
+    
+        // Se dibuja la imagen
+        datos->n++;
+        char par = (datos->n)%2;
+        uint32_t pixel1 = par ? 0xFF666666 : 0xFFEEEEEE;
+        uint32_t pixel2 = 0xFF666666;
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                if ((x + y / 8 * 8) % 16 < 8)
+                    datos->pixels[y * width + x] = pixel1;
+                else
+                    datos->pixels[y * width + x] = pixel2;
+            }
+        }
+    
+        munmap(data, size);
+    
+        // Se añade el listener a wl_buffer
+        datos->wl_buffer_listener.release = wl_buffer_listener_release;
+        wl_buffer_add_listener(buffer, &datos->wl_buffer_listener, datos);
+        return buffer;
+    }
+    
+    //////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de xdg_surface_listener
+    
+    void
+    xdg_surface_listener_configure(void *data,
+    			  struct xdg_surface *xdg_surface,
+    			  uint32_t serial)
+    {
+        printf("[xdg_surface_listener_configure]\n");
+        struct Datos *datos = (struct Datos *)data;
+        xdg_surface_ack_configure(xdg_surface, serial);
+    
+        datos->wl_buffer = crear_buffer(datos);
+        wl_surface_attach(datos->surface, datos->wl_buffer, 0, 0);
+        wl_surface_damage(datos->surface, 0, 0, 640, 480);
+        wl_surface_commit(datos->surface);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    // Función para crear el wl_suface
+    
+    static void
+    crear_surface(struct Datos *datos)
+    {
+        if(datos->xdg_surface == NULL && datos->xdg_wm_base !=NULL && datos->surface != NULL) {
+            datos->xdg_surface = xdg_wm_base_get_xdg_surface(datos->xdg_wm_base, datos->surface);
+            printf("xdg_surface creada\n");
+            datos->xdg_surface_listener.configure = xdg_surface_listener_configure;
+            xdg_surface_add_listener(datos->xdg_surface, &datos->xdg_surface_listener, datos);
+            datos->xdg_toplevel = xdg_surface_get_toplevel(datos->xdg_surface);
+            xdg_toplevel_set_title(datos->xdg_toplevel, "Ejemplo");
+            wl_surface_commit(datos->surface);
+        }
+    }
+    
+    //////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de xdg_wm_base_listener
+    
+    static void
+    xdg_wm_base_listener_ping(void *data, struct xdg_wm_base *xdg_wm_base, uint32_t serial)
+    {
+        //struct Datos *datos = (struct Datos*)data;
+        // El cliente debe contestar al ping con un pong o se considerará que el cliente
+        // no responde a los eventos
+        xdg_wm_base_pong(xdg_wm_base, serial);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de shm_listener
+    
+    static void
+    shm_listener_format(void *data, struct wl_shm *wl_shm, uint32_t format)
+    {
+        struct Datos *datos = (struct Datos*)data;
+        datos->shm_format = format;
+    }
+    
+    
+    ////////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de registry_listener
+    
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        // Se obtiene la struct Datos
+        struct Datos *datos = (struct Datos*) data;
+    
+        printf("Interface %s id %d\n", interface, id);
+        
+        // Se busca el recurso
+        if(!strcmp(interface, "wl_shm")) {
+            // Se solicita el objeto wl_shm
+            datos->shm = wl_registry_bind(registry, id, &wl_shm_interface, version);
+            struct wl_shm_listener *shm_listener = (struct wl_shm_listener*) malloc(sizeof(struct wl_shm_listener));
+            shm_listener->format = shm_listener_format;
+            datos->shm_listener = shm_listener;
+        } else if(! strcmp(interface, "xdg_wm_base")) {
+            datos->xdg_wm_base = wl_registry_bind(registry, id, &xdg_wm_base_interface, version);
+            datos->xdg_wm_base_listener.ping = xdg_wm_base_listener_ping;
+            xdg_wm_base_add_listener(datos->xdg_wm_base, &datos->xdg_wm_base_listener, datos);
+            crear_surface(datos); 
+        } else if(! strcmp(interface, "wl_compositor")) {
+            datos->compositor = wl_registry_bind(registry, id, &wl_compositor_interface, version);
+            datos->surface = wl_compositor_create_surface(datos->compositor);
+            crear_surface(datos);
+        } else if(! strcmp(interface, "wl_seat")) {
+            datos->wl_seat = wl_registry_bind(registry, id, &wl_seat_interface, version);
+            datos->wl_pointer = wl_seat_get_pointer(datos->wl_seat);
+            wl_pointer_add_listener(datos->wl_pointer, &datos->wl_pointer_listener, datos);
+        }
+    }
+    
+    static void
+    registry_listener_remove(void *data, struct wl_registry *registry, uint32_t id)
+    {
+        printf("Se elimina el interface %d\n", id);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    
+    int main(int argc, char **argv)
+    {
+    
+        struct wl_display *display = wl_display_connect(NULL);
+        if (display == NULL) {
+            fprintf(stderr, "No se puede conectar al display\n");
+            exit(1);
+        }
+        printf("Conectado al display\n");
+    
+        // Se crea la estructura para almacenar los protocolos
+        struct Datos datos;
+        datos.shm = NULL;
+        datos.xdg_surface = NULL;
+        datos.xdg_wm_base = NULL;
+        datos.surface = NULL;
+        datos.wl_buffer = NULL;
+        datos.n = 0;
+        datos.wl_pointer_listener.enter = wl_pointer_listener_enter;
+        datos.wl_pointer_listener.leave = wl_pointer_listener_leave;
+        datos.wl_pointer_listener.motion = wl_pointer_listener_motion;
+        datos.wl_pointer_listener.button = wl_pointer_listener_button;
+        datos.wl_pointer_listener.axis = wl_pointer_listener_axis;
+        datos.wl_pointer_listener.frame = wl_pointer_listener_frame;
+        datos.wl_pointer_listener.axis_source = wl_pointer_listener_axis_source;
+        datos.wl_pointer_listener.axis_stop = wl_pointer_listener_axis_stop;
+        datos.wl_pointer_listener.axis_discrete = wl_pointer_listener_axis_discrete;
+    
+    
+        // Se crea el eschador de wl_registry
+        struct wl_registry_listener registry_listener;
+        registry_listener.global = registry_listener_global;
+        registry_listener.global_remove = registry_listener_remove;
+    
+        // Se obtiene el objeto wl_registry 
+        struct wl_registry *registry = wl_display_get_registry(display);
+        // Se le añade el escuchador recién creado
+        wl_registry_add_listener(registry, &registry_listener, &datos);
+    
+        // Se solicita que se envíen las peticiones desde el cliente al servidor
+        wl_display_dispatch(display);
+        // Se bloquea hasta que se procesen los eventos
+        wl_display_roundtrip(display);
+    
+    
+        while (wl_display_dispatch(display)) {
+            // Bucle de eventos
+        }
+        
+        wl_display_disconnect(display);
+        printf("Desconectado del display\n");
+        
+        return 0;
+    }
+
+Si se ejecuta el ejemplo, se puede encontrar que produce una salida similar a la siguiente:
+
+    ...
+    [wl_pointer_listener_enter] 311, 92654
+    [wl_pointer_listener_frame]
+    [wl_pointer_listener_frame]
+    [wl_pointer_listener_motion] 1658, 92115
+    [wl_pointer_listener_frame]
+    [wl_pointer_listener_motion] 3463, 83641
+    [wl_pointer_listener_frame]
+    [wl_pointer_listener_motion] 1711, 83641
+    [wl_pointer_listener_frame]
+    [wl_pointer_listener_motion] 94, 83910
+    [wl_pointer_listener_frame]
+    [wl_pointer_listener_leave]
+    [wl_pointer_listener_frame]
+    ...
+
+Como se puede ver se comienza con un evento "enter". El ratón se mueve dentro de la ventana y se muestran varios eventos "motion", así como su posición dentro de la vetana. Finalmente se muestra el evento "leave". Entre los eventos "enter", "motion" y "leave", se producen eventos "frame". Los eventos frame indican cuándo comienza y cuando termina realmente un evento, puede suceder que una acción produzca varios eventos que estén relaccionados entre ellos, con el evento "frame" el servidor indica el cliente que ha finalizado una secuencia de eventos relaccionados entre sí. Esto se puede comprobar cuando se mueve la rueda del ratón:
+
+    [wl_pointer_listener_frame]
+    [wl_pointer_listener_axis_source]
+    [wl_pointer_listener_axis_discrete]
+    [wl_pointer_listener_axis] axis 0 value 3840
+    [wl_pointer_listener_frame]
+
+Cuando el ratón sale de la ventana se produce un evento "leave".
+
+Cuando se pulsa el botón del ratón, se produce el evento "button":
+
+    [wl_pointer_listener_button] button 272 state 0
+
+Este evento indica el botón del ratón que ha producido el evento y el estado de ese botón "presionado"-"liberado". Si se estudian las cabeceras de wayland-client, se puede encontrar la siguiente enumeración:
+
+    enum wl_pointer_button_state {
+    	/**
+    	 * the button is not pressed
+    	 */
+    	WL_POINTER_BUTTON_STATE_RELEASED = 0,
+    	/**
+    	 * the button is pressed
+    	 */
+    	WL_POINTER_BUTTON_STATE_PRESSED = 1,
+    };
+
+El evento "button" se captura con el siguiente elemento de la estructura:
+
+    void (*button)(void *data,
+    		       struct wl_pointer *wl_pointer,
+    		       uint32_t serial,
+    		       uint32_t time,
+    		       uint32_t button,
+    		       uint32_t state);
+
+El parámetro "uint32_t button", se define en la cabecera "linux/input-event-codes.h" contiene una serie de definiciones que asigna un número a cada tecla. Por ejemplo, para los botones del ratón, se tienen:
+
+    #define BTN_MOUSE		0x110
+    #define BTN_LEFT		0x110
+    #define BTN_RIGHT		0x111
+    #define BTN_MIDDLE		0x112
+
+Así se puede conocer qué botón ha generado el evento.
+
+La imagen del puntero
+---------------------
+
+Si se ejecuta el ejemplo anterior, se puede notar que el ratón, o no se muestra, o se muestra con la última imagen que tuviese antes de entrar en la ventana. Es el cliente el encargado de asignar una imagen al ratón cuando éste entra en la ventana. Por ejemplo, en los editores de texto, el ratón se suele mostrar con una forma de I mayúscula y cuando se está sobre un menú cambia a la forma de flecha habitual. Es el cliente el que debe indicar dichos cambios.
+
+Se debe cargar la imagen correspondiente al cursor, según el tema actual, se crea un wl_surface con dicha imagen y se debe mostrar cuando el ratón entre en la ventana.
+
+Lo primero es añadir la siguiente biblioteca, para poder cargar las imágenes del ratón:
+
+    #include <wayland-cursor.h>
+
+También se debe añadir la biblioteca a la hora de compilar el proyecto:
+
+ 	gcc -o xdg-shell *.c -lwayland-client -lrt -lwayland-cursor
+
+Cuando se tenga la interfaz wl_seat, se puede proceder a cargar la imagen del ratón:
+
+    } else if(! strcmp(interface, "wl_seat")) {
+        datos->wl_seat = wl_registry_bind(registry, id, &wl_seat_interface, version);
+        // Se crea la imagen del cursor
+        struct wl_cursor_theme *cursor_theme = wl_cursor_theme_load(NULL, 24, datos->shm);
+        struct wl_cursor *cursor = wl_cursor_theme_get_cursor(cursor_theme, "left_ptr");
+        datos->wl_cursor_image = cursor->images[0];
+        struct wl_buffer *cursor_buffer = wl_cursor_image_get_buffer(datos->wl_cursor_image);
+
+        datos->wl_surface_cursor = wl_compositor_create_surface(datos->compositor);
+        wl_surface_attach(datos->wl_surface_cursor, cursor_buffer, 0, 0);
+        wl_surface_commit(datos->wl_surface_cursor);
+
+        // Se obtiene el cursor
+        datos->wl_pointer = wl_seat_get_pointer(datos->wl_seat);
+        wl_pointer_add_listener(datos->wl_pointer, &datos->wl_pointer_listener, datos);
+    }
+
+Por último, se asigna el cursor cuando entra en la ventana:
+
+    void wl_pointer_listener_enter(void *data,
+        struct wl_pointer *wl_pointer,
+        uint32_t serial,
+        struct wl_surface *surface,
+        wl_fixed_t surface_x,
+        wl_fixed_t surface_y)
+    {
+        printf("[wl_pointer_listener_enter] %d, %d\n", surface_x, surface_y);
+        struct Datos *datos = (struct Datos*) data;
+        // Se pone la imagen al cursor
+        wl_pointer_set_cursor(wl_pointer, serial, datos->wl_surface_cursor, datos->wl_cursor_image->hotspot_x, datos->wl_cursor_image->hotspot_y);
+    }
+
+A la hora de cargar el tema del cursor, las siguientes funciones son importantes:
+
+    struct wl_cursor_theme *
+    wl_cursor_theme_load(const char *name, int size, struct wl_shm *shm);
+
+Esta función carga el tema del cursor cuyo nombre sea "name". Si "name" es NULL, carga el tema por defecto. El tema se debe liberar con el siguiente método:
+
+    void
+    wl_cursor_theme_destroy(struct wl_cursor_theme *theme);
+
+Con la siguiente función se obtiene un cursor dentro de los que hay disponibles en el tema:
+
+    struct wl_cursor *
+    wl_cursor_theme_get_cursor(struct wl_cursor_theme *theme,
+    			   const char *name);
+
+Con el parámetro "name" se debe indicar el tipo de puntero que se debe cargar, la flecha, el reloj, redimensionar,... Entre los valores admitidos se tienen:
+
+ - alias
+ - all-scroll
+ - arrow
+ - bottom_left_corner
+ - bottom_right_corner
+ - bottom_side
+ - cell
+ - center_ptr
+ - closedhand
+ - col-resize
+ - context-menu
+ - copy
+ - cross
+ - crosshair
+ - default
+ - dnd-ask
+ - dnd-copy
+ - dnd-link
+ - dnd-move
+ - dnd-none
+ - e-resize
+ - ew-resize
+ - fleur
+ - forbidden
+ - grabbing
+ - hand2
+ - help
+ - ibeam
+ - left_ptr
+ - left_ptr_watch
+ - left_side
+ - move
+ - ne-resize
+ - nesw-resize
+ - no-drop
+ - not-allowed
+ - n-resize
+ - ns-resize
+ - nw-resize
+ - nwse-resize
+ - openhand
+ - pencil
+ - pirate
+ - plus
+ - pointer
+ - pointing_hand
+ - progress
+ - question_arrow
+ - right-arrow
+ - right_ptr
+ - right_side
+ - row-resize
+ - sb_h_double_arrow
+ - sb_v_double_arrow
+ - se-resize
+ - size_all
+ - size_bdiag
+ - size_fdiag
+ - size_hor
+ - size_ver
+ - split_h
+ - split_v
+ - s-resize
+ - sw-resize
+ - text
+ - top_left_corner
+ - top_right_corner
+ - top_side
+ - up-arrow
+ - up_arrow
+ - vertical-text
+ - wait
+ - watch
+ - whats_this
+ - w-resize
+ - X-cursor
+ - xterm
+ - zoom-in
+ - zoom-out
+
+Una vez obtenida la imagen del cursor con la que se desea trabajar, con el método:
+
+    struct wl_buffer *
+    wl_cursor_image_get_buffer(struct wl_cursor_image *image);
+
+Se obtiene el buffer con el que poder crear el wl_surface para el cursor.
+
+También es posible crear cursores animados, pero escapa a los objetivos de este manual.
+
+Finalmente, en el evento "enter" se ha añadido la siguiente función para poder ver indicar el puntero del ratón que debe ser visible:
+
+    void
+    wl_pointer_set_cursor(wl_pointer* wl_pointer, uint serial, wl_surface* surface, int hotspot_x, int hotspot_y)
+
+Los parámetros son imediatos de entender salvo hotsplot_. A la hora de dibujar el puntero, se dibujará en las coordenadas (x, y) - (hotspot_x, hotspot_y). Realmente, para nosotros como programadores el puntero es un pixel que se mueve por la pantalla. Para hacerlo más visible se le coloca una imagen. Dicho pixel está colocado en la esquina superior izquierda en el puntero con forma de flecha y en el centro de la imagen en el puntero con forma de +. Con hotsplot_ se está indicando cómo se debe desplazar la imagen para que el pixel que representa el cursor sea coherente con la imagen.
+
+El ejemplo completo se tiene en el siguiente código:
+
+    // gcc -o %e %s -lwayland-client  -lwayland-cursor -lrt 
+    
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <wayland-client.h>
+    #include <wayland-cursor.h>
+    
+    #include "wayland-xdg-shell-client-protocol.h"
+    
+    //////////////////////////////////////////////////////////
+    // Código para crear el descriptor de fichero en el que compartir la memoria
+    #include <errno.h>
+    #include <fcntl.h>
+    #include <sys/mman.h>
+    #include <unistd.h>
+    
+    static void
+    randname(char *buf)
+    {
+        int r = rand();
+    	for (int i = 0; i < 6; ++i) {
+    		buf[i] = 'A'+(r&15)+(r&16)*2;
+    		r >>= 5;
+    	}
+    }
+    
+    static int
+    create_shm_file(void)
+    {
+    	int retries = 100;
+    	do {
+    		char name[] = "/wl_shm-XXXXXX";
+    		randname(name + sizeof(name) - 7);
+    		--retries;
+    		int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    		if (fd >= 0) {
+    			shm_unlink(name);
+    			return fd;
+    		}
+    	} while (retries > 0 && errno == EEXIST);
+    	return -1;
+    }
+    
+    int
+    allocate_shm_file(size_t size)
+    {
+    	int fd = create_shm_file();
+    	if (fd < 0)
+    		return -1;
+    	int ret;
+    	do {
+    		ret = ftruncate(fd, size);
+    	} while (ret < 0 && errno == EINTR);
+    	if (ret < 0) {
+    		close(fd);
+    		return -1;
+    	}
+    	return fd;
+    }
+    
+    ////////////////////////////////////////////////////////////
+    // Estructura de datos para almacenar recursos
+    
+    struct Datos {
+        // Objetos para crear la memoria compartida
+        struct wl_shm *shm;
+        struct wl_shm_listener *shm_listener;
+        uint32_t shm_format;
+        uint8_t *pool_data;
+        struct wl_shm_pool *pool;
+        struct wl_buffer *buffer;
+    
+        // Objetos para crear la "surface"
+        struct wl_surface *surface;
+        struct wl_compositor *compositor;
+        uint32_t *pixels; // Pixels de la ventana
+        int n;
+    
+        // Objetos para crear la ventana
+        struct xdg_wm_base *xdg_wm_base;
+        struct xdg_wm_base_listener xdg_wm_base_listener;
+        struct xdg_surface *xdg_surface;
+        struct xdg_surface_listener xdg_surface_listener;
+        struct wl_buffer *wl_buffer;
+        struct wl_buffer_listener wl_buffer_listener;
+        struct xdg_toplevel *xdg_toplevel;
+    
+        //Objetos para capturar el ratón
+        struct wl_seat *wl_seat;
+        struct wl_pointer *wl_pointer;
+        struct wl_pointer_listener wl_pointer_listener;
+        //Imagen del cursor
+        struct wl_surface *wl_surface_cursor;
+        struct wl_cursor_image *wl_cursor_image;
+    };
+    
+    ///////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de wl_pointer_listener
+    
+    
+    void wl_pointer_listener_enter(void *data,
+        struct wl_pointer *wl_pointer,
+        uint32_t serial,
+        struct wl_surface *surface,
+        wl_fixed_t surface_x,
+        wl_fixed_t surface_y)
+    {
+        printf("[wl_pointer_listener_enter] %d, %d\n", surface_x, surface_y);
+        struct Datos *datos = (struct Datos*) data;
+        // Se pone la imagen al cursor
+        wl_pointer_set_cursor(wl_pointer, serial, datos->wl_surface_cursor, datos->wl_cursor_image->hotspot_x, datos->wl_cursor_image->hotspot_y);
+    }
+    
+    
+    void wl_pointer_listener_leave(void *data,
+        struct wl_pointer *wl_pointer,
+        uint32_t serial,
+        struct wl_surface *surface)
+    {
+        printf("[wl_pointer_listener_leave]\n");
+    }
+    
+    void wl_pointer_listener_motion(void *data,
+        struct wl_pointer *wl_pointer,
+        uint32_t time,
+        wl_fixed_t surface_x,
+        wl_fixed_t surface_y)
+    {
+        printf("[wl_pointer_listener_motion] %d, %d\n", surface_x, surface_y);
+    }
+    
+    
+    void wl_pointer_listener_button(void *data,
+        struct wl_pointer *wl_pointer,
+        uint32_t serial,
+        uint32_t time,
+        uint32_t button,
+        uint32_t state)
+    {
+        printf("[wl_pointer_listener_button] button %d state %d\n", button, state);
+    }
+    
+    
+    void wl_pointer_listener_axis(void *data,
+        struct wl_pointer *wl_pointer,
+        uint32_t time,
+        uint32_t axis,
+        wl_fixed_t value)
+    {
+        printf("[wl_pointer_listener_axis] axis %d value %d\n", axis, value);
+    }
+    
+    void wl_pointer_listener_frame(void *data,
+        struct wl_pointer *wl_pointer)
+    {
+        printf("[wl_pointer_listener_frame]\n");
+    }
+    
+    
+    void wl_pointer_listener_axis_source(void *data,
+        struct wl_pointer *wl_pointer,
+        uint32_t axis_source)
+    {
+        printf("[wl_pointer_listener_axis_source]\n");
+    }
+    
+    
+    void wl_pointer_listener_axis_stop(void *data,
+        struct wl_pointer *wl_pointer,
+        uint32_t time,
+        uint32_t axis)
+    {
+        printf("[wl_pointer_listener_axis_stop]\n");
+    }
+    
+    void wl_pointer_listener_axis_discrete(void *data,
+                                  struct wl_pointer *wl_pointer,
+                                  uint32_t axis,
+                                  int32_t discrete)
+    {
+        printf("[wl_pointer_listener_axis_discrete]\n");
+    }
+    ///////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de wl_buffer_listener
+    
+    static void
+    wl_buffer_listener_release(void *data, struct wl_buffer *wl_buffer)
+    {
+        // Evento enviado por el compositor cuando el buffer no se necesita más
+        wl_buffer_destroy(wl_buffer);
+        printf("[wl_buffer_listener_release] Buffer destruido\n");
+    }
+    
+    ///////////////////////////////////////////////////////////
+    // Función para crear y dibujar en el buffer
+    
+    static struct wl_buffer *
+    crear_buffer(struct Datos *datos)
+    {
+        // Tamaño de la ventana que se va a dibujar
+        const int width = 640, height = 480;
+        // Bytes por pixel
+        int stride = width * 4;
+        // Total de bytes de la imagen
+        int size = stride * height;
+    
+        // Se adquiere el archivo que se usará para compartir la memoria
+        int fd = allocate_shm_file(size);
+        if (fd == -1) {
+            return NULL;
+        }
+    
+        // Se "mapea" para compartir
+        uint32_t *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (data == MAP_FAILED) {
+            close(fd);
+            return NULL;
+        }
+        // ¡Ya se tiene el array de pixeles para dibujar!
+        datos->pixels = data;
+    
+        // Se crea el pool para compartir la memoria con el servidor Wayland
+        struct wl_shm_pool *pool = wl_shm_create_pool(datos->shm, fd, size);
+        // Se crea el buffer a partir del pool
+        struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0,
+                width, height, stride, WL_SHM_FORMAT_XRGB8888);
+        wl_shm_pool_destroy(pool);
+        close(fd);
+    
+        // Se dibuja la imagen
+        datos->n++;
+        char par = (datos->n)%2;
+        uint32_t pixel1 = par ? 0xFF666666 : 0xFFEEEEEE;
+        uint32_t pixel2 = 0xFF666666;
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                if ((x + y / 8 * 8) % 16 < 8)
+                    datos->pixels[y * width + x] = pixel1;
+                else
+                    datos->pixels[y * width + x] = pixel2;
+            }
+        }
+    
+        munmap(data, size);
+    
+        // Se añade el listener a wl_buffer
+        datos->wl_buffer_listener.release = wl_buffer_listener_release;
+        wl_buffer_add_listener(buffer, &datos->wl_buffer_listener, datos);
+        return buffer;
+    }
+    
+    //////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de xdg_surface_listener
+    
+    void
+    xdg_surface_listener_configure(void *data,
+    			  struct xdg_surface *xdg_surface,
+    			  uint32_t serial)
+    {
+        printf("[xdg_surface_listener_configure]\n");
+        struct Datos *datos = (struct Datos *)data;
+        xdg_surface_ack_configure(xdg_surface, serial);
+    
+        datos->wl_buffer = crear_buffer(datos);
+        wl_surface_attach(datos->surface, datos->wl_buffer, 0, 0);
+        wl_surface_damage(datos->surface, 0, 0, 640, 480);
+        wl_surface_commit(datos->surface);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    // Función para crear el wl_suface
+    
+    static void
+    crear_surface(struct Datos *datos)
+    {
+        if(datos->xdg_surface == NULL && datos->xdg_wm_base !=NULL && datos->surface != NULL) {
+            datos->xdg_surface = xdg_wm_base_get_xdg_surface(datos->xdg_wm_base, datos->surface);
+            printf("xdg_surface creada\n");
+            datos->xdg_surface_listener.configure = xdg_surface_listener_configure;
+            xdg_surface_add_listener(datos->xdg_surface, &datos->xdg_surface_listener, datos);
+            datos->xdg_toplevel = xdg_surface_get_toplevel(datos->xdg_surface);
+            xdg_toplevel_set_title(datos->xdg_toplevel, "Ejemplo");
+            wl_surface_commit(datos->surface);
+        }
+    }
+    
+    //////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de xdg_wm_base_listener
+    
+    static void
+    xdg_wm_base_listener_ping(void *data, struct xdg_wm_base *xdg_wm_base, uint32_t serial)
+    {
+        //struct Datos *datos = (struct Datos*)data;
+        // El cliente debe contestar al ping con un pong o se considerará que el cliente
+        // no responde a los eventos
+        xdg_wm_base_pong(xdg_wm_base, serial);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de shm_listener
+    
+    static void
+    shm_listener_format(void *data, struct wl_shm *wl_shm, uint32_t format)
+    {
+        struct Datos *datos = (struct Datos*)data;
+        datos->shm_format = format;
+    }
+    
+    
+    ////////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de registry_listener
+    
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        // Se obtiene la struct Datos
+        struct Datos *datos = (struct Datos*) data;
+    
+        printf("Interface %s id %d\n", interface, id);
+        
+        // Se busca el recurso
+        if(!strcmp(interface, "wl_shm")) {
+            // Se solicita el objeto wl_shm
+            datos->shm = wl_registry_bind(registry, id, &wl_shm_interface, version);
+            struct wl_shm_listener *shm_listener = (struct wl_shm_listener*) malloc(sizeof(struct wl_shm_listener));
+            shm_listener->format = shm_listener_format;
+            datos->shm_listener = shm_listener;
+        } else if(! strcmp(interface, "xdg_wm_base")) {
+            datos->xdg_wm_base = wl_registry_bind(registry, id, &xdg_wm_base_interface, version);
+            datos->xdg_wm_base_listener.ping = xdg_wm_base_listener_ping;
+            xdg_wm_base_add_listener(datos->xdg_wm_base, &datos->xdg_wm_base_listener, datos);
+            crear_surface(datos); 
+        } else if(! strcmp(interface, "wl_compositor")) {
+            datos->compositor = wl_registry_bind(registry, id, &wl_compositor_interface, version);
+            datos->surface = wl_compositor_create_surface(datos->compositor);
+            crear_surface(datos);
+        } else if(! strcmp(interface, "wl_seat")) {
+            datos->wl_seat = wl_registry_bind(registry, id, &wl_seat_interface, version);
+            // Se crea la imagen del cursor
+            struct wl_cursor_theme *cursor_theme = wl_cursor_theme_load(NULL, 24, datos->shm);
+            struct wl_cursor *cursor = wl_cursor_theme_get_cursor(cursor_theme, "pirate");
+            datos->wl_cursor_image = cursor->images[0];
+            struct wl_buffer *cursor_buffer = wl_cursor_image_get_buffer(datos->wl_cursor_image);
+    
+            datos->wl_surface_cursor = wl_compositor_create_surface(datos->compositor);
+            wl_surface_attach(datos->wl_surface_cursor, cursor_buffer, 0, 0);
+            wl_surface_commit(datos->wl_surface_cursor);
+    
+            // Se obtiene el cursor
+            datos->wl_pointer = wl_seat_get_pointer(datos->wl_seat);
+            wl_pointer_add_listener(datos->wl_pointer, &datos->wl_pointer_listener, datos);
+        }
+    }
+    
+    static void
+    registry_listener_remove(void *data, struct wl_registry *registry, uint32_t id)
+    {
+        printf("Se elimina el interface %d\n", id);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    
+    int main(int argc, char **argv)
+    {
+    
+        struct wl_display *display = wl_display_connect(NULL);
+        if (display == NULL) {
+            fprintf(stderr, "No se puede conectar al display\n");
+            exit(1);
+        }
+        printf("Conectado al display\n");
+    
+        // Se crea la estructura para almacenar los protocolos
+        struct Datos datos;
+        datos.shm = NULL;
+        datos.xdg_surface = NULL;
+        datos.xdg_wm_base = NULL;
+        datos.surface = NULL;
+        datos.wl_buffer = NULL;
+        datos.n = 0;
+        datos.wl_pointer_listener.enter = wl_pointer_listener_enter;
+        datos.wl_pointer_listener.leave = wl_pointer_listener_leave;
+        datos.wl_pointer_listener.motion = wl_pointer_listener_motion;
+        datos.wl_pointer_listener.button = wl_pointer_listener_button;
+        datos.wl_pointer_listener.axis = wl_pointer_listener_axis;
+        datos.wl_pointer_listener.frame = wl_pointer_listener_frame;
+        datos.wl_pointer_listener.axis_source = wl_pointer_listener_axis_source;
+        datos.wl_pointer_listener.axis_stop = wl_pointer_listener_axis_stop;
+        datos.wl_pointer_listener.axis_discrete = wl_pointer_listener_axis_discrete;
+    
+    
+        // Se crea el eschador de wl_registry
+        struct wl_registry_listener registry_listener;
+        registry_listener.global = registry_listener_global;
+        registry_listener.global_remove = registry_listener_remove;
+    
+        // Se obtiene el objeto wl_registry 
+        struct wl_registry *registry = wl_display_get_registry(display);
+        // Se le añade el escuchador recién creado
+        wl_registry_add_listener(registry, &registry_listener, &datos);
+    
+        // Se solicita que se envíen las peticiones desde el cliente al servidor
+        wl_display_dispatch(display);
+        // Se bloquea hasta que se procesen los eventos
+        wl_display_roundtrip(display);
+    
+    
+        while (wl_display_dispatch(display)) {
+            // Bucle de eventos
+        }
+        
+        wl_display_disconnect(display);
+        printf("Desconectado del display\n");
+        
+        return 0;
+    }
