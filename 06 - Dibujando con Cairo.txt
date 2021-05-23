@@ -1,0 +1,456 @@
+Dibujando con Cairo
+===================
+
+Los dibujos que se han hecho hasta ahora se limitaban a dibujar patrones cambiando los bytes del buffer de la imagen directamente. En el caso de que se quisiera hacer un dibujo más elaborado, con transparencias, arcos y líneas, habría que escribir una gran cantidad de código. Existen bibliotecas que ya hacen este trabajo y están debidamente optimizadas para se usadas. Una de estas bibliotecas es Cairo:
+
+https://www.cairographics.org/
+
+Cairo es una biblioteca que dado un buffer, permite dibujar en dicho buffer arcos, líneas, transparencias, texto,... Cairo es usada, por ejemplo, en la biblioteca GTK.
+
+Cairo también permite hacer dibujos en otros formatos como puede ser en PDF, PNG,...
+
+A parte de Cairo hay más bibliotecas que permiten hacer esta labor como puede ser Skia de Google:
+
+https://skia.org/
+
+Cuando en Postscript o en PDF se dibuja una figura, por ejemplo, un pentágono, se suele indicar una posición inicial y después se indican las posiciones de los siguientes puntos de la figura. Por ejemplo, si se abriera una archivo PDF, se podría encontrar un texto similar al siguiente:
+
+    20 822 m 40 822 l 30 792 l h S
+
+Las primeras coordenadas indican la posición (x, y) en la que se va a empezar a dibujar la figura (20 822 m), después de indica que desde esta posición se va a dibujar una línea a la posición 40,822 (40 822 l), desde la posición 40,822 se va a dibujar otra línea que va a terminar en 30,792 (30 792 l). La última h se refiere a que se va a cerrar la figura dibujando una línea desde la última posición (30,792) a la primera (20,822). La S se refiere a que se van a dibujar las líneas sin rellenar la figura.
+
+Cairo trabaja de una forma muy similar. En Cairo se pueden encontrar códigos similares al siguiente:
+
+    cairo_set_source_rgba (cr, 1, 0, 0, 0.5);
+    cairo_move_to(cr, 0, 12);
+    cairo_arc(cr, 12, 12, 12, M_PI,  3.0*M_PI*0.5);
+    cairo_line_to(cr, window->width - 12, 0);
+    cairo_arc(cr, window->width - 12, 12, 12, 3.0*M_PI*0.5, 2.0*M_PI);
+    cairo_line_to(cr, window->width, 24);
+    cairo_line_to(cr, 0, 24);
+    cairo_close_path(cr);
+    cairo_fill(cr);
+
+cairo_set_source_rgba india el color que se va a usar para dibujar. Con cairo_move_to se indica la posición en la que se va a empezar a dibujar. Con cairo_line_to se indica que se va  dibujar una línea desde la posición anterior a la que se indique. Con cairo_arc se pueden dibujar arcos de circuferencia. Con cairo_close_path se indica que la figura se debe cerrar uniendo la última posición con la primera. cairo_fill indica que la figura se debe rellenar.
+
+Se puede encontrar más información de cómo realizar los dibujos en la página web de Cairo.
+
+Dibujando en Wayland con Cairo
+------------------------------
+
+Para poder compilar el código al usar la biblioteca Cairo se deberá añadir:
+
+    pkg-config cairo --cflags --libs
+
+Es decir, el comadno para compilar quedaría:
+
+    gcc -o xdg-shell *.c -lwayland-client -lrt `pkg-config cairo --cflags --libs`
+
+El proceso de dibujar con Cairo en Wayland es relativamente sencillo. Se va a modificar el ejemplo en el que se dibujaba un patrón de cuadrados por un dibujo hecho en con Cairo. Como ya se ha visto, para poder dibujar en Wayland usando un cliente de debía crear un wl_buffer en el que poder obtener un buffer que se va a compartir con el servidor Wayland. A su vez con este buffer, se va a crear un objeto cairo_surface_t en el que se podrá acceder desde Cairo al buffer de Wayland:
+
+    datos->cairo_surface = cairo_image_surface_create_for_data((unsigned char*)(datos->pixels), CAIRO_FORMAT_ARGB32, width, height, stride);
+
+Una vez creado este buffer, se procede a crear el objeto que permite dibujar desde Cairo en dicho buffer:
+
+    cairo_t *cr = cairo_create(datos->cairo_surface);
+    cairo_set_source_rgba (cr, 0, 0, 0, 0);
+    cairo_paint(cr);
+
+A partir de ese instante ya se puede dibujar usando las primitivas de Cairo. Terminado el dibujo se destruye el objeto "cr":
+
+    cairo_destroy(cr);
+
+En el caso de que el buffer sea destruido, se necesita destruir el objeto cairo_surface_t y generar uno nuevo con el nuevo tamaño de la ventana (en el caso de que la ventana haya cambiado su tamaño).
+
+El ejemplo completo se tiene a continuación. Se puede ver que sólo se ha cambiado el código de la función crear_buffer:
+
+    // gcc -o %e %s -lwayland-client `pkg-config cairo --cflags --libs`
+    
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <wayland-client.h>
+    
+    #include "wayland-xdg-shell-client-protocol.h"
+    
+    ///////////////////////////////////////////////////////////
+    // Se incluye la bibliote cairo
+    
+    #include <cairo/cairo.h>
+    
+    ///////////////////////////////////////////////////////////
+    // Código para crear el descriptor de fichero en el que compartir la memoria
+    #include <errno.h>
+    #include <fcntl.h>
+    #include <sys/mman.h>
+    #include <unistd.h>
+    
+    static void
+    randname(char *buf)
+    {
+        int r = rand();
+    	for (int i = 0; i < 6; ++i) {
+    		buf[i] = 'A'+(r&15)+(r&16)*2;
+    		r >>= 5;
+    	}
+    }
+    
+    static int
+    create_shm_file(void)
+    {
+    	int retries = 100;
+    	do {
+    		char name[] = "/wl_shm-XXXXXX";
+    		randname(name + sizeof(name) - 7);
+    		--retries;
+    		int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    		if (fd >= 0) {
+    			shm_unlink(name);
+    			return fd;
+    		}
+    	} while (retries > 0 && errno == EEXIST);
+    	return -1;
+    }
+    
+    int
+    allocate_shm_file(size_t size)
+    {
+    	int fd = create_shm_file();
+    	if (fd < 0)
+    		return -1;
+    	int ret;
+    	do {
+    		ret = ftruncate(fd, size);
+    	} while (ret < 0 && errno == EINTR);
+    	if (ret < 0) {
+    		close(fd);
+    		return -1;
+    	}
+    	return fd;
+    }
+    
+    ////////////////////////////////////////////////////////////
+    // Estructura de datos para almacenar recursos
+    
+    struct Datos {
+        // Objetos para crear la memoria compartida
+        struct wl_shm *shm;
+        struct wl_shm_listener *shm_listener;
+        uint32_t shm_format;
+        uint8_t *pool_data;
+        struct wl_shm_pool *pool;
+        struct wl_buffer *buffer;
+    
+        // Objetos para crear la "surface"
+        struct wl_surface *surface;
+        struct wl_compositor *compositor;
+        uint32_t *pixels; // Pixels de la ventana
+        int n;
+    
+        // Objetos para crear la ventana
+        struct xdg_wm_base *xdg_wm_base;
+        struct xdg_wm_base_listener xdg_wm_base_listener;
+        struct xdg_surface *xdg_surface;
+        struct xdg_surface_listener xdg_surface_listener;
+        struct wl_buffer *wl_buffer;
+        struct wl_buffer_listener wl_buffer_listener;
+        struct xdg_toplevel *xdg_toplevel;
+    
+        // Objetos para dibujar con cairo
+        cairo_surface_t *cairo_surface;
+    };
+    
+    ///////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de wl_buffer_listener
+    
+    static void
+    wl_buffer_listener_release(void *data, struct wl_buffer *wl_buffer)
+    {
+        // Evento enviado por el compositor cuando el buffer no se necesita más
+        wl_buffer_destroy(wl_buffer);
+        printf("[wl_buffer_listener_release] Buffer destruido\n");
+    }
+    
+    ///////////////////////////////////////////////////////////
+    // Función para crear y dibujar en el buffer
+    
+    static struct wl_buffer *
+    crear_buffer(struct Datos *datos)
+    {
+        // Tamaño de la ventana que se va a dibujar
+        const int width = 640, height = 480;
+        // Bytes por pixel
+        int stride = width * 4;
+        // Total de bytes de la imagen
+        int size = stride * height;
+    
+        // Se adquiere el archivo que se usará para compartir la memoria
+        int fd = allocate_shm_file(size);
+        if (fd == -1) {
+            return NULL;
+        }
+    
+        // Se "mapea" para compartir
+        uint32_t *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (data == MAP_FAILED) {
+            close(fd);
+            return NULL;
+        }
+        // ¡Ya se tiene el array de pixeles para dibujar!
+        datos->pixels = data;
+    
+        // Se crea el pool para compartir la memoria con el servidor Wayland
+        struct wl_shm_pool *pool = wl_shm_create_pool(datos->shm, fd, size);
+        // Se crea el buffer a partir del pool
+        struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0,
+                width, height, stride, WL_SHM_FORMAT_XRGB8888);
+        wl_shm_pool_destroy(pool);
+        close(fd);
+    
+        // Se dibuja la imagen
+        //datos->n++;
+        //char par = (datos->n)%2;
+        //uint32_t pixel1 = par ? 0xFF666666 : 0xFFEEEEEE;
+        //uint32_t pixel2 = 0xFF666666;
+        //for (int y = 0; y < height; ++y) {
+        //    for (int x = 0; x < width; ++x) {
+        //        if ((x + y / 8 * 8) % 16 < 8)
+        //            datos->pixels[y * width + x] = pixel1;
+        //        else
+        //            datos->pixels[y * width + x] = pixel2;
+        //    }
+        //}
+    
+        // Se destruye el buffer anterior
+        if(datos->cairo_surface != NULL)
+        	cairo_surface_destroy(datos->cairo_surface);
+    
+        // Se crea el buffer para que Cairo pueda dibujar
+        datos->cairo_surface = cairo_image_surface_create_for_data((unsigned char*)(datos->pixels), CAIRO_FORMAT_ARGB32, width, height, stride);
+        if(cairo_surface_status(datos->cairo_surface) == CAIRO_STATUS_SUCCESS)
+            printf("cairo_surface creado\n");
+        else
+            fprintf(stderr, "Error: cairo_surface no se puede crear: %s\n", cairo_status_to_string(cairo_surface_status(datos->cairo_surface)));
+    
+        cairo_t *cr = cairo_create(datos->cairo_surface);
+        cairo_set_source_rgba (cr, 0, 0, 0, 0);
+        cairo_paint(cr);
+        
+        // Se dibuja el marco de la ventana
+        
+        cairo_set_source_rgba (cr, 1, 1, 1, 0.40);
+        cairo_rectangle (cr, 0, 0, width, height);
+        cairo_fill(cr);
+        
+        cairo_set_source_rgba (cr, 0.75, 0.75, 0.75, 1);
+        
+        cairo_rectangle (cr, 0, 0, width, 5);
+        cairo_rectangle (cr, 0, 5, 5, height);
+        cairo_rectangle (cr, 5, height - 5, width, height);
+        cairo_rectangle (cr, width - 5, 5, width, height - 5);
+        cairo_fill(cr);
+        /*
+        cairo_move_to(cr, 0, 12);
+        cairo_arc(cr, 12, 12, 12, M_PI,  3.0*M_PI*0.5);
+        cairo_line_to(cr, window->width - 12, 0);
+        cairo_arc(cr, window->width - 12, 12, 12, 3.0*M_PI*0.5, 2.0*M_PI);
+        cairo_line_to(cr, window->width, 24);
+        cairo_line_to(cr, 0, 24);
+        cairo_close_path(cr);
+        cairo_fill(cr);
+        
+        cairo_move_to(cr, 0, 24);
+        cairo_line_to(cr, 0, window->height);
+        cairo_line_to(cr, window->width, window->height);
+        cairo_line_to(cr, window->width, 24);
+        cairo_line_to(cr, window->width - 5, 24);
+        cairo_line_to(cr, window->width - 5, window->height - 5);
+        cairo_line_to(cr, 5, window->height - 5);
+        cairo_line_to(cr, 5, 24);
+        cairo_close_path(cr);
+        cairo_fill(cr);
+        */
+        printf("Se ha dibujado el marco\n");
+        
+        // Se dibuja el título
+        
+        cairo_set_source_rgba(cr, 0, 0, 0, 1);
+    	cairo_move_to(cr, 10, 17);
+    	cairo_set_font_size(cr, 14);
+    	cairo_show_text(cr, "Título");
+        
+        // Se dibujan los botones
+        
+        cairo_set_source_rgba (cr, 1, 0, 0, 0.5);
+        cairo_arc(cr, width - 15, 12, 6, 0,  2.0*M_PI);
+        cairo_fill(cr);
+        
+        cairo_set_source_rgba (cr, 1, 1, 0, 0.5);
+        cairo_arc(cr, width - 15 - 12 - 4, 12, 6, 0,  2.0*M_PI);
+        cairo_fill(cr);
+        
+        cairo_set_source_rgba (cr, 0, 0, 1, 0.5);
+        cairo_arc(cr, width - 15 - 12*2 - 4*2, 12, 6, 0,  2.0*M_PI);
+        cairo_fill(cr);
+        
+        
+        // Se dibuja un fondo blanco para la superficie de la ventana
+        
+        cairo_set_source_rgba (cr, 1, 1, 1, 1);
+        cairo_rectangle (cr, 5, 24, width - 10, height - 5 - 24 );
+        cairo_fill(cr);
+        
+        cairo_destroy(cr);
+        
+        printf("Fin del dibujo\n");
+    
+        munmap(data, size);
+    
+        // Se añade el listener a wl_buffer
+        datos->wl_buffer_listener.release = wl_buffer_listener_release;
+        wl_buffer_add_listener(buffer, &datos->wl_buffer_listener, datos);
+        return buffer;
+    }
+    
+    //////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de xdg_surface_listener
+    
+    void
+    xdg_surface_listener_configure(void *data,
+    			  struct xdg_surface *xdg_surface,
+    			  uint32_t serial)
+    {
+        printf("[xdg_surface_listener_configure]\n");
+        struct Datos *datos = (struct Datos *)data;
+        xdg_surface_ack_configure(xdg_surface, serial);
+    
+        datos->wl_buffer = crear_buffer(datos);
+        wl_surface_attach(datos->surface, datos->wl_buffer, 0, 0);
+        wl_surface_damage(datos->surface, 0, 0, 640, 480);
+        wl_surface_commit(datos->surface);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    // Función para crear el wl_suface
+    
+    static void
+    crear_surface(struct Datos *datos)
+    {
+        if(datos->xdg_surface == NULL && datos->xdg_wm_base !=NULL && datos->surface != NULL) {
+            datos->xdg_surface = xdg_wm_base_get_xdg_surface(datos->xdg_wm_base, datos->surface);
+            printf("xdg_surface creada\n");
+            datos->xdg_surface_listener.configure = xdg_surface_listener_configure;
+            xdg_surface_add_listener(datos->xdg_surface, &datos->xdg_surface_listener, datos);
+            datos->xdg_toplevel = xdg_surface_get_toplevel(datos->xdg_surface);
+            xdg_toplevel_set_title(datos->xdg_toplevel, "Ejemplo");
+            wl_surface_commit(datos->surface);
+        }
+    }
+    
+    //////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de xdg_wm_base_listener
+    
+    static void
+    xdg_wm_base_listener_ping(void *data, struct xdg_wm_base *xdg_wm_base, uint32_t serial)
+    {
+        //struct Datos *datos = (struct Datos*)data;
+        // El cliente debe contestar al ping con un pong o se considerará que el cliente
+        // no responde a los eventos
+        xdg_wm_base_pong(xdg_wm_base, serial);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de shm_listener
+    
+    static void
+    shm_listener_format(void *data, struct wl_shm *wl_shm, uint32_t format)
+    {
+        struct Datos *datos = (struct Datos*)data;
+        datos->shm_format = format;
+    }
+    
+    
+    ////////////////////////////////////////////////////////////
+    // Metodos para capturar eventos de registry_listener
+    
+    static void
+    registry_listener_global(void *data, struct wl_registry *registry, uint32_t id,
+               const char *interface, uint32_t version)
+    {
+        // Se obtiene la struct Datos
+        struct Datos *datos = (struct Datos*) data;
+    
+        printf("Interface %s id %d\n", interface, id);
+        
+        // Se busca el recurso
+        if(!strcmp(interface, "wl_shm")) {
+            // Se solicita el objeto wl_shm
+            datos->shm = wl_registry_bind(registry, id, &wl_shm_interface, version);
+            struct wl_shm_listener *shm_listener = (struct wl_shm_listener*) malloc(sizeof(struct wl_shm_listener));
+            shm_listener->format = shm_listener_format;
+            datos->shm_listener = shm_listener;
+        } else if(! strcmp(interface, "xdg_wm_base")) {
+            datos->xdg_wm_base = wl_registry_bind(registry, id, &xdg_wm_base_interface, version);
+            datos->xdg_wm_base_listener.ping = xdg_wm_base_listener_ping;
+            xdg_wm_base_add_listener(datos->xdg_wm_base, &datos->xdg_wm_base_listener, datos);
+            crear_surface(datos); 
+        } else if(! strcmp(interface, "wl_compositor")) {
+            datos->compositor = wl_registry_bind(registry, id, &wl_compositor_interface, version);
+            datos->surface = wl_compositor_create_surface(datos->compositor);
+            crear_surface(datos);
+        }
+    
+    }
+    
+    static void
+    registry_listener_remove(void *data, struct wl_registry *registry, uint32_t id)
+    {
+        printf("Se elimina el interface %d\n", id);
+    }
+    
+    ///////////////////////////////////////////////////////////
+    
+    int main(int argc, char **argv)
+    {
+    
+        struct wl_display *display = wl_display_connect(NULL);
+        if (display == NULL) {
+            fprintf(stderr, "No se puede conectar al display\n");
+            exit(1);
+        }
+        printf("Conectado al display\n");
+    
+        // Se crea la estructura para almacenar los protocolos
+        struct Datos datos;
+        datos.shm = NULL;
+        datos.xdg_surface = NULL;
+        datos.xdg_wm_base = NULL;
+        datos.surface = NULL;
+        datos.wl_buffer = NULL;
+        datos.cairo_surface = NULL;
+    
+        // Se crea el eschador de wl_registry
+        struct wl_registry_listener registry_listener;
+        registry_listener.global = registry_listener_global;
+        registry_listener.global_remove = registry_listener_remove;
+    
+        // Se obtiene el objeto wl_registry 
+        struct wl_registry *registry = wl_display_get_registry(display);
+        // Se le añade el escuchador recién creado
+        wl_registry_add_listener(registry, &registry_listener, &datos);
+    
+        // Se solicita que se envíen las peticiones desde el cliente al servidor
+        wl_display_dispatch(display);
+        // Se bloquea hasta que se procesen los eventos
+        wl_display_roundtrip(display);
+    
+    
+        while (wl_display_dispatch(display)) {
+            // Bucle de eventos
+        }
+        
+        wl_display_disconnect(display);
+        printf("Desconectado del display\n");
+        
+        return 0;
+    }
